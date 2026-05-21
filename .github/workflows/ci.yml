@@ -35,6 +35,9 @@ jobs:
           print('all imports ok')
           "
 
+      - name: pytest
+        run: uv run pytest tests/ -v
+
       - name: cfn-lint
         run: |
           uv pip install --no-cache cfn-lint
