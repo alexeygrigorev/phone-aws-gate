@@ -13,7 +13,7 @@ CLI_ENV := PHONE_AWS_ROW_KEY=$(LOCAL_ROW_KEY) DDB_ENDPOINT_URL=$(LOCAL_DDB_URL)
 .PHONY: help dev-up dev-down dev-restart dev-logs dev-ps dev-test \
         android-build android-test android-install android-launch android-logs android-ready local-emulator-ready \
         pair-qr-from-stack \
-        start-sandbox start-prod stop status \
+        start-sandbox stop status \
         sync
 
 help:
@@ -37,7 +37,6 @@ help:
 	@echo
 	@echo "Manual gate control (against local dev stack):"
 	@echo "  make start-sandbox  open the gate in sandbox mode for 60min"
-	@echo "  make start-prod     open the gate in prod mode for 60min"
 	@echo "  make stop           close the gate"
 	@echo "  make status         show current gate state"
 	@echo
@@ -80,7 +79,7 @@ android-logs:
 	adb logcat --pid="$$(adb shell pidof -s com.alexeygrigorev.phoneawsauth | tr -d '\r')"
 
 android-ready: android-test android-install android-launch
-	@echo "App launched. For prod/AWS testing, pair it with the QR from ./deploy.sh or make pair-qr-from-stack."
+	@echo "App launched. Pair it with the QR from ./deploy.sh or make pair-qr-from-stack."
 
 local-emulator-ready: dev-up dev-test android-test android-install android-launch
 	@echo "App launched. In the first screen, choose: Use local-dev stack (emulator)."
@@ -108,10 +107,6 @@ pair-qr-from-stack:
 start-sandbox:
 	$(CLI_ENV) uv run python -c "from tools.phone_client import GateClient; \
 		print(GateClient.from_env().start('sandbox', 60))"
-
-start-prod:
-	$(CLI_ENV) uv run python -c "from tools.phone_client import GateClient; \
-		print(GateClient.from_env().start('prod', 60))"
 
 stop:
 	$(CLI_ENV) uv run python -c "from tools.phone_client import GateClient; \

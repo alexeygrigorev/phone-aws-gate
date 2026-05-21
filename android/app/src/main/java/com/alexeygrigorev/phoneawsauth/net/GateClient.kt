@@ -52,8 +52,8 @@ class GateClient(
     }
 
     suspend fun start(mode: String, durationMinutes: Int, note: String = ""): Result {
-        require(mode == "prod" || mode == "sandbox") {
-            "mode must be 'prod' or 'sandbox', got $mode"
+        require(mode == "sandbox") {
+            "mode must be 'sandbox', got $mode"
         }
         require(durationMinutes in 1..(24 * 60)) {
             "durationMinutes must be 1..1440, got $durationMinutes"

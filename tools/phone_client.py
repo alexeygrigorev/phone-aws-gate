@@ -66,8 +66,8 @@ class GateClient:
         )
 
     def start(self, mode: str, duration_minutes: int = 60, note: str = "") -> GateState:
-        if mode not in ("prod", "sandbox"):
-            raise ValueError(f"mode must be 'prod' or 'sandbox', got {mode!r}")
+        if mode != "sandbox":
+            raise ValueError(f"mode must be 'sandbox', got {mode!r}")
         if duration_minutes <= 0 or duration_minutes > 24 * 60:
             raise ValueError(f"duration_minutes must be 1..1440, got {duration_minutes}")
 

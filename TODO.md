@@ -6,18 +6,17 @@
 - Fail closed if paired-mode biometric prompting is unavailable.
 - Disable Start/Stop until the app has successfully read gate status.
 - Add Android JVM tests for pairing JSON parsing and gate-action enablement.
-- Add Makefile targets for Android build/install/launch and prod pairing QR regeneration.
+- Add Makefile targets for Android build/install/launch and pairing QR regeneration.
 - Document the real-AWS emulator test flow.
-- Add explicit confirmation before opening prod/main-account access.
 - Show the selected auto-close TTL in the Android interface.
 
 ## Next
 
 - Confirm provided AWS credentials can create IAM/CloudFormation resources.
-- Deploy the stack with `SANDBOX_ASSUME_ROLE_ARN` wired as the sandbox target.
+- Deploy the sandbox-only stack using `.env` credentials.
 - Generate pairing payload/QR for the emulator.
 - Run Docker test-server against the real vendor URL.
-- Test Start sandbox, Stop, then Start prod, Stop against the real stack.
+- Test Start sandbox, then Stop, against the real stack.
 
 ## Backlog
 

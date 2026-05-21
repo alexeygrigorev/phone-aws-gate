@@ -12,13 +12,6 @@
 
 set -euo pipefail
 
-if [[ -f sandbox-account.env && -z "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source sandbox-account.env
-    set +a
-fi
-
 if [[ -f .runtime/prod-test.env && -z "${BEARER:-}" ]]; then
     set -a
     # shellcheck disable=SC1091
@@ -47,19 +40,7 @@ EOF
 echo "Deploying $STACK_NAME to $REGION ..."
 
 parameter_overrides=("ServerTokenHash=$SERVER_TOKEN_HASH")
-if [[ -z "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
-    cat >&2 <<'EOF'
-SANDBOX_ASSUME_ROLE_ARN is required.
-
-Create sandbox-account.env with:
-  SANDBOX_ASSUME_ROLE_ARN=arn:aws:iam::<sandbox-account-id>:role/<role-name>
-
-The vendor Lambda lives in the main account and assumes this role for sandbox mode.
-EOF
-    exit 1
-fi
-parameter_overrides+=("SandboxTargetRoleArn=$SANDBOX_ASSUME_ROLE_ARN")
-echo "Sandbox mode will target external role: $SANDBOX_ASSUME_ROLE_ARN"
+echo "Sandbox mode will target the sandbox role created by this stack."
 
 aws cloudformation deploy \
     --region "$REGION" \
@@ -99,12 +80,10 @@ Phone / CLI configuration:
   access key id:   ${out[ControllerAccessKeyId]}
   secret key:      ${out[ControllerSecretAccessKey]}
 
-Target role ARNs:
-  prod:    ${out[ProdRoleArn]}
+Target role ARN:
   sandbox: ${out[SandboxRoleArn]}
 
 To customise role permissions later:
-  aws iam put-role-policy --role-name phone-aws-prod-role ...
   aws iam put-role-policy --role-name phone-aws-sandbox-role ...
 
 To revoke phone access immediately:

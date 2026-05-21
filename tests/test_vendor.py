@@ -27,7 +27,6 @@ def env():
     """Set the env vars the handler reads on each call."""
     keys = {
         "SERVER_TOKEN_HASH": TOKEN_HASH,
-        "PROD_ROLE_ARN": "arn:aws:iam::000000000000:role/phone-aws-prod-role",
         "SANDBOX_ROLE_ARN": "arn:aws:iam::000000000000:role/phone-aws-sandbox-role",
         "MOCK_STS": "1",
     }
@@ -94,14 +93,6 @@ def test_200_returns_fake_creds_for_sandbox():
     assert "SecretAccessKey" in body
     assert "Token" in body
     assert "Expiration" in body
-
-
-def test_200_returns_fake_creds_for_prod():
-    with patch.object(gate, "read_gate", return_value=_open_gate("prod")):
-        resp = vendor.handler(_event(), _ctx())
-    assert resp["statusCode"] == 200
-    body = json.loads(resp["body"])
-    assert body["AccessKeyId"] == "ASIA-FAKE-PROD"
 
 
 def test_500_when_gate_has_bad_mode():

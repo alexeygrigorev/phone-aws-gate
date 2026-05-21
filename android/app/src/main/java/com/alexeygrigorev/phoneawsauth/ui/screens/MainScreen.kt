@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -16,7 +15,6 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -156,17 +154,8 @@ private fun GateControl(
     // Duration picker. Values map to start(durationMinutes).
     val durationOptions = listOf(15, 60, 240, 480)
     var durationIdx by remember { mutableIntStateOf(1) }
-    var pendingProdDuration by remember { mutableStateOf<Int?>(null) }
     val durationMinutes = durationOptions[durationIdx]
     val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
-
-    fun requestStart(mode: String, minutes: Int) {
-        if (mode == "prod") {
-            pendingProdDuration = minutes
-        } else {
-            runStart(scope, gateOp, client, mode, minutes) { state = it }
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -207,14 +196,8 @@ private fun GateControl(
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = gateActionsEnabled,
-            onClick = { requestStart("sandbox", durationMinutes) },
+            onClick = { runStart(scope, gateOp, client, "sandbox", durationMinutes) { state = it } },
         ) { Text("Start sandbox ($durationLabel)") }
-
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            enabled = gateActionsEnabled,
-            onClick = { requestStart("prod", durationMinutes) },
-        ) { Text("Start prod ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
@@ -238,43 +221,6 @@ private fun GateControl(
             Text("Unpair / use other deployment")
         }
     }
-
-    val prodDuration = pendingProdDuration
-    if (prodDuration != null) {
-        ConfirmProdDialog(
-            durationLabel = if (prodDuration < 60) "${prodDuration}m" else "${prodDuration / 60}h",
-            onDismiss = { pendingProdDuration = null },
-            onConfirm = {
-                pendingProdDuration = null
-                runStart(scope, gateOp, client, "prod", prodDuration) { state = it }
-            },
-        )
-    }
-}
-
-@Composable
-private fun ConfirmProdDialog(
-    durationLabel: String,
-    onDismiss: () -> Unit,
-    onConfirm: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Main account access") },
-        text = {
-            Text("Are you really sure you want to give access to the main account for $durationLabel?")
-        },
-        confirmButton = {
-            TextButton(onClick = onConfirm) {
-                Text("Yes, start prod")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        },
-    )
 }
 
 @Composable
