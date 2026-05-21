@@ -30,7 +30,3 @@ def role_arn_for_mode(mode: str) -> str:
     if mode != MODE_SANDBOX:
         raise ValueError(f"unsupported mode: {mode!r}")
     return os.environ["SANDBOX_ROLE_ARN"]
-
-
-def server_token_hash() -> str:
-    return os.environ["SERVER_TOKEN_HASH"]

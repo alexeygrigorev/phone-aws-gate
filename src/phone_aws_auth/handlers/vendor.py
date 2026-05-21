@@ -55,10 +55,6 @@ def handler(event: dict, context) -> dict:
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    expected_hash = config.server_token_hash()
-    if not _const_eq(token_hash, expected_hash):
-        return _response(403, "Forbidden")
-
     row = gate.read_gate(token_hash)
     now = int(time.time())
     if row is None or not row.is_open_at(now):

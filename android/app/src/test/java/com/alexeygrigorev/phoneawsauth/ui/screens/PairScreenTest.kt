@@ -12,6 +12,7 @@ class PairScreenTest {
             """
             {
               "region": "eu-west-1",
+              "name": "hetzner",
               "table": "phone-aws-gate",
               "rowKey": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
               "accessKeyId": "AKIATEST",
@@ -20,6 +21,7 @@ class PairScreenTest {
             """.trimIndent(),
         )
 
+        assertEquals("hetzner", config.name)
         assertEquals("eu-west-1", config.region)
         assertEquals("phone-aws-gate", config.table)
         assertEquals("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", config.rowKey)
@@ -41,6 +43,7 @@ class PairScreenTest {
 
         assertEquals(PairedConfig.DEFAULT_REGION, config.region)
         assertEquals(PairedConfig.DEFAULT_TABLE, config.table)
+        assertEquals("Host", config.name)
     }
 
     @Test

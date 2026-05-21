@@ -65,9 +65,9 @@ fun PairScreen(onDone: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Pair with a deployment", style = MaterialTheme.typography.titleLarge)
+        Text("Register host", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Scan the QR shown by deploy.sh, or paste the JSON it printed " +
+            "Scan the QR shown by ./pair-qr.sh on the host, or paste the JSON it printed " +
                 "(useful in the emulator without a working camera).",
             style = MaterialTheme.typography.bodySmall,
         )
@@ -79,8 +79,8 @@ fun PairScreen(onDone: () -> Unit) {
                 scanLauncher.launch(
                     ScanOptions()
                         .setBeepEnabled(false)
-                        .setOrientationLocked(false)
-                        .setPrompt("Point the camera at the deploy.sh QR")
+                        .setOrientationLocked(true)
+                        .setPrompt("Point the camera at the host QR")
                         .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 )
             },
@@ -104,7 +104,7 @@ fun PairScreen(onDone: () -> Unit) {
             modifier = Modifier.fillMaxWidth(),
             onClick = { applyPayload(payload) },
             enabled = payload.isNotBlank(),
-        ) { Text("Save & pair (from pasted JSON)") }
+        ) { Text("Register host (from pasted JSON)") }
 
         Spacer(Modifier.height(8.dp))
 
@@ -143,6 +143,7 @@ internal fun parse(payload: String): PairedConfig {
     }
 
     return PairedConfig(
+        name = obj.optString("name").ifBlank { "Host" },
         region = obj.optString("region").ifBlank { PairedConfig.DEFAULT_REGION },
         table = obj.optString("table").ifBlank { PairedConfig.DEFAULT_TABLE },
         rowKey = rowKey,

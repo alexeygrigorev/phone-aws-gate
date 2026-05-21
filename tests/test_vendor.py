@@ -26,7 +26,6 @@ TOKEN_HASH = hashlib.sha256(BEARER.encode()).hexdigest()
 def env():
     """Set the env vars the handler reads on each call."""
     keys = {
-        "SERVER_TOKEN_HASH": TOKEN_HASH,
         "SANDBOX_ROLE_ARN": "arn:aws:iam::000000000000:role/phone-aws-sandbox-role",
         "MOCK_STS": "1",
     }
@@ -60,7 +59,8 @@ def test_403_when_no_authorization_header():
 
 
 def test_403_when_token_hash_does_not_match():
-    resp = vendor.handler(_event(token="wrong-bearer"), _ctx())
+    with patch.object(gate, "read_gate", return_value=None):
+        resp = vendor.handler(_event(token="wrong-bearer"), _ctx())
     assert resp["statusCode"] == 403
 
 

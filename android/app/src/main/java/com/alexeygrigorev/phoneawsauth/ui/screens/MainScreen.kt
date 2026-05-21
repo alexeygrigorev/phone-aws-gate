@@ -60,6 +60,7 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
 
     // remember(pairVersion) re-reads settings after the Pair screen pops.
     var paired by remember(pairVersion) { mutableStateOf(settings.load()) }
+    var hosts by remember(pairVersion) { mutableStateOf(settings.hosts()) }
     var devOverride by remember(pairVersion) { mutableStateOf(false) }
 
     val client: GateClient? = when {
@@ -82,13 +83,20 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
 
     GateControl(
         client = client,
-        modeLabel = if (paired != null) "paired" else "local-dev",
+        modeLabel = paired?.name ?: "local-dev",
+        hosts = hosts,
+        selectedRowKey = paired?.rowKey,
         requireBiometric = requireBio,
         activity = activity,
         onUnpair = {
-            settings.clear()
-            paired = null
+            paired?.let { settings.remove(it.rowKey) } ?: settings.clear()
+            hosts = settings.hosts()
+            paired = settings.load()
             devOverride = false
+        },
+        onSelectHost = { host ->
+            settings.select(host.rowKey)
+            paired = host
         },
         onPair = onPair,
     )
@@ -103,7 +111,7 @@ private fun NotPairedScreen(onPair: () -> Unit, onUseDevStack: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("phone-aws-auth", style = MaterialTheme.typography.titleLarge)
+        Text("AWS Gate", style = MaterialTheme.typography.titleLarge)
         Text(
             "Not paired. Pair this device with a deployed stack to control its gate.",
             style = MaterialTheme.typography.bodyMedium,
@@ -123,9 +131,12 @@ private fun NotPairedScreen(onPair: () -> Unit, onUseDevStack: () -> Unit) {
 private fun GateControl(
     client: GateClient,
     modeLabel: String,
+    hosts: List<PairedConfig>,
+    selectedRowKey: String?,
     requireBiometric: Boolean,
     activity: FragmentActivity?,
     onUnpair: () -> Unit,
+    onSelectHost: (PairedConfig) -> Unit,
     onPair: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -142,7 +153,7 @@ private fun GateControl(
         } else if (biometricActivity == null) {
             GateClient.Result.Error("Biometric", "Biometric prompt is unavailable")
         } else {
-            when (val auth = requireBiometric(biometricActivity, title, "phone-aws-auth")) {
+            when (val auth = requireBiometric(biometricActivity, title, "AWS Gate")) {
                 BiometricResult.Authenticated -> op()
                 BiometricResult.UserCancelled -> GateClient.Result.Error("Cancelled", "Biometric cancelled")
                 BiometricResult.NotAvailable -> GateClient.Result.Error("NoBiometric", "No biometric enrolled")
@@ -165,10 +176,19 @@ private fun GateControl(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
-            "phone-aws-auth",
+            "AWS Gate",
             style = MaterialTheme.typography.titleLarge,
         )
         Text("[$modeLabel]", style = MaterialTheme.typography.bodySmall)
+        if (hosts.size > 1) {
+            hosts.forEach { host ->
+                OutlinedButton(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = host.rowKey != selectedRowKey,
+                    onClick = { onSelectHost(host) },
+                ) { Text(if (host.rowKey == selectedRowKey) "Selected: ${host.name}" else "Use ${host.name}") }
+            }
+        }
         StatusBlock(state)
 
         Spacer(Modifier.height(8.dp))
@@ -197,7 +217,7 @@ private fun GateControl(
             modifier = Modifier.fillMaxWidth(),
             enabled = gateActionsEnabled,
             onClick = { runStart(scope, gateOp, client, "sandbox", durationMinutes) { state = it } },
-        ) { Text("Start sandbox ($durationLabel)") }
+        ) { Text("Start ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
@@ -214,11 +234,11 @@ private fun GateControl(
         ) { Text("Refresh") }
 
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onPair) {
-            Text("Re-pair")
+            Text("Register another host")
         }
 
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onUnpair) {
-            Text("Unpair / use other deployment")
+            Text("Forget this host")
         }
     }
 }

@@ -1,53 +1,25 @@
 #!/usr/bin/env bash
 #
-# Deploy or update the phone-aws-auth stack. The bearer token is generated
-# locally and never enters CloudFormation — only its sha256 hash does.
-#
-# Re-running with the same $BEARER (or with the cached value below) is
-# idempotent: the same hash goes in, the same row key comes back.
-#
-# Usage:
-#   ./deploy.sh                  # generate a fresh bearer
-#   BEARER='<existing-bearer>' ./deploy.sh   # reuse one (e.g. rotation)
+# Deploy or update the AWS Gate stack. Host bearer tokens are generated
+# separately by ./install-aws-gate-env.sh so each machine can have its own gate.
 
 set -euo pipefail
-
-if [[ -f .runtime/prod-test.env && -z "${BEARER:-}" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source .runtime/prod-test.env
-    set +a
-fi
 
 STACK_NAME="${STACK_NAME:-phone-aws-auth}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-eu-west-1}}"
 
-# Generate a 32-byte (64 hex char) bearer if not provided.
-BEARER="${BEARER:-$(openssl rand -hex 32)}"
-if [[ "${#BEARER}" -lt 16 ]]; then
-    echo "BEARER too short (need >=16 chars)" >&2
-    exit 1
-fi
-SERVER_TOKEN_HASH="$(printf '%s' "$BEARER" | sha256sum | cut -d' ' -f1)"
-
 umask 077
 mkdir -p .runtime
-cat > .runtime/prod-test.env <<EOF
-BEARER=$BEARER
-SERVER_TOKEN_HASH=$SERVER_TOKEN_HASH
-EOF
 
 echo "Deploying $STACK_NAME to $REGION ..."
 
-parameter_overrides=("ServerTokenHash=$SERVER_TOKEN_HASH")
 echo "Sandbox mode will target the sandbox role created by this stack."
 
 aws cloudformation deploy \
     --region "$REGION" \
     --stack-name "$STACK_NAME" \
     --template-file infra/template.yaml \
-    --capabilities CAPABILITY_NAMED_IAM \
-    --parameter-overrides "${parameter_overrides[@]}"
+    --capabilities CAPABILITY_NAMED_IAM
 
 echo
 echo "=== Outputs ==="
@@ -69,14 +41,12 @@ done
 
 cat <<EOF
 
-Server bearer (write this in the server's env, then delete this line):
+Server credential endpoint:
   AWS_CONTAINER_CREDENTIALS_FULL_URI=${out[VendorUrl]}
-  AWS_CONTAINER_AUTHORIZATION_TOKEN=${BEARER}
 
 Phone / CLI configuration:
   region:          ${REGION}
   table:           phone-aws-gate
-  row key:         ${out[GateRowKey]}
   access key id:   ${out[ControllerAccessKeyId]}
   secret key:      ${out[ControllerSecretAccessKey]}
 
@@ -94,14 +64,10 @@ To revoke phone access immediately:
 
 EOF
 
-# Render the pairing QR if uv + qrcode are available.
-if command -v uv >/dev/null && [[ -f tools/pair_qr.py ]]; then
-    echo "Pairing QR (scan with the phone in the Pair screen):"
-    echo
-    uv run --extra tools python -m tools.pair_qr \
-        --region "$REGION" \
-        --row-key "${out[GateRowKey]}" \
-        --access-key-id "${out[ControllerAccessKeyId]}" \
-        --secret-access-key "${out[ControllerSecretAccessKey]}" \
-        || echo "  (QR render failed — re-run \`uv run python -m tools.pair_qr --json ...\` manually)"
-fi
+cat > .runtime/controller.json <<EOF
+{"region":"$REGION","table":"phone-aws-gate","vendorUrl":"${out[VendorUrl]}","accessKeyId":"${out[ControllerAccessKeyId]}","secretAccessKey":"${out[ControllerSecretAccessKey]}"}
+EOF
+
+echo "Next on each host:"
+echo "  ./install-aws-gate-env.sh"
+echo "  ./pair-qr.sh"

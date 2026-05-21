@@ -22,6 +22,7 @@ import sys
 
 def build_payload(args: argparse.Namespace) -> dict:
     return {
+        "name": args.name,
         "region": args.region,
         "table": args.table,
         "rowKey": args.row_key,
@@ -50,6 +51,7 @@ def main() -> None:
         description="Render the phone-pairing JSON payload as a QR (or print it).",
     )
     p.add_argument("--region", default="eu-west-1")
+    p.add_argument("--name", default="host")
     p.add_argument("--table", default="phone-aws-gate")
     p.add_argument("--row-key", required=True,
                    help="sha256 of the server bearer (64 hex chars)")

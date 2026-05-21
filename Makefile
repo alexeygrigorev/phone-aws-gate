@@ -32,7 +32,7 @@ help:
 	@echo "  make android-launch launch the app on the active adb device"
 	@echo "  make android-logs   tail app logs from the active adb device"
 	@echo "  make android-ready  build, install, and launch the app"
-	@echo "  make pair-qr-from-stack render pairing QR from deployed AWS stack outputs"
+	@echo "  make pair-qr-from-stack render this host's registration QR"
 	@echo "  make local-emulator-ready start local stack, test it, install, and launch"
 	@echo
 	@echo "Manual gate control (against local dev stack):"
@@ -79,30 +79,13 @@ android-logs:
 	adb logcat --pid="$$(adb shell pidof -s com.alexeygrigorev.phoneawsauth | tr -d '\r')"
 
 android-ready: android-test android-install android-launch
-	@echo "App launched. Pair it with the QR from ./deploy.sh or make pair-qr-from-stack."
+	@echo "App launched. Register this host with ./pair-qr.sh or make pair-qr-from-stack."
 
 local-emulator-ready: dev-up dev-test android-test android-install android-launch
 	@echo "App launched. In the first screen, choose: Use local-dev stack (emulator)."
 
 pair-qr-from-stack:
-	@set -euo pipefail; \
-	echo "Reading stack outputs from $(STACK_NAME) in $(REGION) ..."; \
-	outputs="$$(aws cloudformation describe-stacks \
-		--region "$(REGION)" \
-		--stack-name "$(STACK_NAME)" \
-		--query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' \
-		--output text)"; \
-	row_key="$$(printf '%s\n' "$$outputs" | awk '$$1=="GateRowKey"{print $$2}')"; \
-	access_key_id="$$(printf '%s\n' "$$outputs" | awk '$$1=="ControllerAccessKeyId"{print $$2}')"; \
-	secret_access_key="$$(printf '%s\n' "$$outputs" | awk '$$1=="ControllerSecretAccessKey"{print $$2}')"; \
-	test -n "$$row_key"; \
-	test -n "$$access_key_id"; \
-	test -n "$$secret_access_key"; \
-	uv run --extra tools python -m tools.pair_qr \
-		--region "$(REGION)" \
-		--row-key "$$row_key" \
-		--access-key-id "$$access_key_id" \
-		--secret-access-key "$$secret_access_key"
+	./pair-qr.sh
 
 start-sandbox:
 	$(CLI_ENV) uv run python -c "from tools.phone_client import GateClient; \
