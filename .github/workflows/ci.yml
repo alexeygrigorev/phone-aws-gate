@@ -8,6 +8,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   backend:
     name: Backend (lint + import smoke)
@@ -80,3 +83,13 @@ jobs:
         with:
           name: phone-aws-auth-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Prepare release APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk "phone-aws-auth-${GITHUB_REF_NAME}-debug.apk"
+
+      - name: Publish GitHub Release APK
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: phone-aws-auth-${{ github.ref_name }}-debug.apk
