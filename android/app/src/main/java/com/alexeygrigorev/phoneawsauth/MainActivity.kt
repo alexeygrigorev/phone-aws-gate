@@ -16,18 +16,33 @@ import androidx.fragment.app.FragmentActivity
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
 import com.alexeygrigorev.phoneawsauth.ui.screens.MainScreen
 import com.alexeygrigorev.phoneawsauth.ui.screens.PairScreen
+import com.alexeygrigorev.phoneawsauth.ui.screens.parse
 import com.alexeygrigorev.phoneawsauth.ui.theme.PhoneAwsAuthTheme
+import java.util.Base64
 
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (BuildConfig.DEBUG) {
+            debugPairingPayload()?.let { payload ->
+                runCatching { PairedSettings(this).save(parse(payload)) }
+            }
+        }
         enableEdgeToEdge()
         setContent {
             PhoneAwsAuthTheme {
                 App()
             }
+        }
+    }
+
+    private fun debugPairingPayload(): String? {
+        intent.getStringExtra("pairing_json")?.let { return it }
+        return intent.getStringExtra("pairing_json_b64")?.let {
+            String(Base64.getDecoder().decode(it), Charsets.UTF_8)
         }
     }
 }

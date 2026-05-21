@@ -47,12 +47,19 @@ EOF
 echo "Deploying $STACK_NAME to $REGION ..."
 
 parameter_overrides=("ServerTokenHash=$SERVER_TOKEN_HASH")
-if [[ -n "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
-    parameter_overrides+=("SandboxTargetRoleArn=$SANDBOX_ASSUME_ROLE_ARN")
-    echo "Sandbox mode will target external role: $SANDBOX_ASSUME_ROLE_ARN"
-else
-    echo "Sandbox mode will target the in-account sandbox role."
+if [[ -z "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
+    cat >&2 <<'EOF'
+SANDBOX_ASSUME_ROLE_ARN is required.
+
+Create sandbox-account.env with:
+  SANDBOX_ASSUME_ROLE_ARN=arn:aws:iam::<sandbox-account-id>:role/<role-name>
+
+The vendor Lambda lives in the main account and assumes this role for sandbox mode.
+EOF
+    exit 1
 fi
+parameter_overrides+=("SandboxTargetRoleArn=$SANDBOX_ASSUME_ROLE_ARN")
+echo "Sandbox mode will target external role: $SANDBOX_ASSUME_ROLE_ARN"
 
 aws cloudformation deploy \
     --region "$REGION" \
