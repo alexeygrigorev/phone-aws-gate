@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -73,3 +74,9 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone-aws-auth-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
