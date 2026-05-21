@@ -7,7 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -16,6 +16,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -137,23 +138,35 @@ private fun GateControl(
     }
 
     val gateOp: suspend (String, suspend () -> GateClient.Result) -> GateClient.Result = { title, op ->
-        if (requireBiometric && activity != null) {
-            when (val auth = requireBiometric(activity, title, "phone-aws-auth")) {
+        val biometricActivity = activity
+        if (!requireBiometric) {
+            op()
+        } else if (biometricActivity == null) {
+            GateClient.Result.Error("Biometric", "Biometric prompt is unavailable")
+        } else {
+            when (val auth = requireBiometric(biometricActivity, title, "phone-aws-auth")) {
                 BiometricResult.Authenticated -> op()
                 BiometricResult.UserCancelled -> GateClient.Result.Error("Cancelled", "Biometric cancelled")
                 BiometricResult.NotAvailable -> GateClient.Result.Error("NoBiometric", "No biometric enrolled")
                 is BiometricResult.Failed -> GateClient.Result.Error("Biometric", auth.reason)
             }
-        } else {
-            op()
         }
     }
 
     // Duration picker. Values map to start(durationMinutes).
     val durationOptions = listOf(15, 60, 240, 480)
     var durationIdx by remember { mutableIntStateOf(1) }
+    var pendingProdDuration by remember { mutableStateOf<Int?>(null) }
     val durationMinutes = durationOptions[durationIdx]
     val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
+
+    fun requestStart(mode: String, minutes: Int) {
+        if (mode == "prod") {
+            pendingProdDuration = minutes
+        } else {
+            runStart(scope, gateOp, client, mode, minutes) { state = it }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -173,7 +186,7 @@ private fun GateControl(
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
 
-        Text("Duration", style = MaterialTheme.typography.labelMedium)
+        Text("Auto-close TTL: $durationLabel", style = MaterialTheme.typography.labelMedium)
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             durationOptions.forEachIndexed { i, mins ->
                 SegmentedButton(
@@ -187,21 +200,25 @@ private fun GateControl(
         }
 
         val busy = state is UiState.Busy
+        val gateActionsEnabled = canRunGateAction(
+            result = (state as? UiState.Idle)?.result,
+            busy = busy,
+        )
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            onClick = { runStart(scope, gateOp, client, "sandbox", durationMinutes) { state = it } },
+            enabled = gateActionsEnabled,
+            onClick = { requestStart("sandbox", durationMinutes) },
         ) { Text("Start sandbox ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
-            onClick = { runStart(scope, gateOp, client, "prod", durationMinutes) { state = it } },
+            enabled = gateActionsEnabled,
+            onClick = { requestStart("prod", durationMinutes) },
         ) { Text("Start prod ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = !busy,
+            enabled = gateActionsEnabled,
             onClick = { runStop(scope, gateOp, client) { state = it } },
         ) { Text("Stop") }
 
@@ -221,6 +238,43 @@ private fun GateControl(
             Text("Unpair / use other deployment")
         }
     }
+
+    val prodDuration = pendingProdDuration
+    if (prodDuration != null) {
+        ConfirmProdDialog(
+            durationLabel = if (prodDuration < 60) "${prodDuration}m" else "${prodDuration / 60}h",
+            onDismiss = { pendingProdDuration = null },
+            onConfirm = {
+                pendingProdDuration = null
+                runStart(scope, gateOp, client, "prod", prodDuration) { state = it }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ConfirmProdDialog(
+    durationLabel: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Main account access") },
+        text = {
+            Text("Are you really sure you want to give access to the main account for $durationLabel?")
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Yes, start prod")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable
@@ -319,4 +373,8 @@ private fun runRefresh(scope: CoroutineScope, client: GateClient, onState: (UiSt
     scope.launch(Dispatchers.IO) {
         onState(UiState.Idle(client.status()))
     }
+}
+
+internal fun canRunGateAction(result: GateClient.Result?, busy: Boolean): Boolean {
+    return !busy && result != null && result !is GateClient.Result.Error
 }

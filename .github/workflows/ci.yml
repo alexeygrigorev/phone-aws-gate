@@ -47,7 +47,7 @@ jobs:
         run: bash -n deploy.sh
 
   android:
-    name: Android (assembleDebug)
+    name: Android (test + assembleDebug)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,4 +72,4 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew testDebugUnitTest assembleDebug --no-daemon

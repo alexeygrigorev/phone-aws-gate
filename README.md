@@ -352,7 +352,21 @@ Once the local loop is green:
 └─────────────────────────────┘
 ```
 
-`make e2e-up` deploys the stack (if not already deployed) and starts the Docker test-server pointed at the real vendor URL. You scan the QR with the emulator, tap Start sandbox, watch the Docker container's logs show `sts:GetCallerIdentity` succeeding, tap Stop, watch it start failing on the next refresh.
+For emulator testing from a PC that already has AWS access:
+
+```sh
+# Build, install, and launch the Android app on the active emulator/device.
+make android-ready
+
+# If you are deploying fresh, this prints the pairing QR at the end.
+./deploy.sh
+
+# If the stack already exists, regenerate only the phone pairing QR
+# from CloudFormation outputs.
+make pair-qr-from-stack
+```
+
+In the app, tap **Pair**, scan the QR, then return to the main screen. The app should run its DynamoDB `GetItem` health check against the real table. Tap **Start sandbox** first, complete the biometric prompt, and watch the remote server or test process that uses `AWS_CONTAINER_CREDENTIALS_FULL_URI` + `AWS_CONTAINER_AUTHORIZATION_TOKEN`. Tap **Stop** and confirm refreshes start failing after the SDK's next credentials refresh.
 
 Costs: pennies. Lambda + DynamoDB on-demand for a few invocations is well within free tier.
 
@@ -369,7 +383,15 @@ adb exec-out screencap -p > screen.png   # observe state
 adb shell input tap 540 1200             # drive UI
 ```
 
-Pairing without a physical QR scan: the app has a hidden dev-mode "paste pairing string" option (enabled by a long-press on the Pair button). The pairing string is the same data the QR encodes, just as text. CI uses this path; humans use the QR.
+Pairing without a physical QR scan: the Pair screen has a paste field. Generate the same payload as JSON with:
+
+```sh
+uv run python -m tools.pair_qr --json \
+    --region eu-west-1 \
+    --row-key <GateRowKey> \
+    --access-key-id <ControllerAccessKeyId> \
+    --secret-access-key <ControllerSecretAccessKey>
+```
 
 ### Test matrix
 

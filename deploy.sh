@@ -25,12 +25,18 @@ SERVER_TOKEN_HASH="$(printf '%s' "$BEARER" | sha256sum | cut -d' ' -f1)"
 
 echo "Deploying $STACK_NAME to $REGION ..."
 
+parameter_overrides=("ServerTokenHash=$SERVER_TOKEN_HASH")
+if [[ -n "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
+    parameter_overrides+=("SandboxTargetRoleArn=$SANDBOX_ASSUME_ROLE_ARN")
+    echo "Sandbox mode will target external role: $SANDBOX_ASSUME_ROLE_ARN"
+fi
+
 aws cloudformation deploy \
     --region "$REGION" \
     --stack-name "$STACK_NAME" \
     --template-file infra/template.yaml \
     --capabilities CAPABILITY_NAMED_IAM \
-    --parameter-overrides "ServerTokenHash=$SERVER_TOKEN_HASH"
+    --parameter-overrides "${parameter_overrides[@]}"
 
 echo
 echo "=== Outputs ==="

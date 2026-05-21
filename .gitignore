@@ -17,6 +17,7 @@ dist/
 deploy-outputs.json
 pairing-qr.png
 pairing-secret.txt
+.runtime/
 
 # Android
 android/.gradle/
@@ -34,3 +35,4 @@ Thumbs.db
 # Editor
 .vscode/
 *.swp
+sandbox-account.env

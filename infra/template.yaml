@@ -24,10 +24,23 @@ Parameters:
     MaxValue: 3600
     Description: STS session length the vendor mints. Default 15min (the minimum).
 
+  SandboxTargetRoleArn:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional existing role ARN in a separate sandbox account. When set,
+      sandbox mode vendors credentials for this external role instead of the
+      in-account phone-aws-sandbox-role. The external role trust policy must
+      allow phone-aws-lambda-role to assume it.
+    AllowedPattern: "^$|^arn:aws:iam::[0-9]{12}:role/.+$"
+
   StackNameTag:
     Type: String
     Default: phone-aws-auth
     Description: Used for resource tagging; do not change.
+
+Conditions:
+  HasExternalSandboxRole: !Not [!Equals [!Ref SandboxTargetRoleArn, ""]]
 
 Resources:
 
@@ -149,6 +162,10 @@ Resources:
             Resource:
               - !GetAtt ProdRole.Arn
               - !GetAtt SandboxRole.Arn
+              - !If
+                - HasExternalSandboxRole
+                - !Ref SandboxTargetRoleArn
+                - !Ref AWS::NoValue
 
   VendorLambda:
     Type: AWS::Lambda::Function
@@ -164,7 +181,10 @@ Resources:
         Variables:
           SERVER_TOKEN_HASH: !Ref ServerTokenHash
           PROD_ROLE_ARN: !GetAtt ProdRole.Arn
-          SANDBOX_ROLE_ARN: !GetAtt SandboxRole.Arn
+          SANDBOX_ROLE_ARN: !If
+            - HasExternalSandboxRole
+            - !Ref SandboxTargetRoleArn
+            - !GetAtt SandboxRole.Arn
           SESSION_DURATION: !Ref SessionDurationSeconds
       Code:
         # Self-contained vendor handler. Kept tight so it inlines cleanly.
@@ -305,4 +325,16 @@ Outputs:
   ProdRoleArn:
     Value: !GetAtt ProdRole.Arn
   SandboxRoleArn:
+    Description: Effective role ARN used by sandbox mode.
+    Value: !If
+      - HasExternalSandboxRole
+      - !Ref SandboxTargetRoleArn
+      - !GetAtt SandboxRole.Arn
+
+  InAccountSandboxRoleArn:
+    Description: Sandbox role created in this stack, even when sandbox mode targets an external role.
     Value: !GetAtt SandboxRole.Arn
+
+  VendorLambdaRoleArn:
+    Description: Principal to allow in an external sandbox role trust policy.
+    Value: !GetAtt VendorLambdaRole.Arn
