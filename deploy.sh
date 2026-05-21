@@ -12,6 +12,20 @@
 
 set -euo pipefail
 
+if [[ -f sandbox-account.env && -z "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source sandbox-account.env
+    set +a
+fi
+
+if [[ -f .runtime/prod-test.env && -z "${BEARER:-}" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .runtime/prod-test.env
+    set +a
+fi
+
 STACK_NAME="${STACK_NAME:-phone-aws-auth}"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-eu-west-1}}"
 
@@ -23,12 +37,21 @@ if [[ "${#BEARER}" -lt 16 ]]; then
 fi
 SERVER_TOKEN_HASH="$(printf '%s' "$BEARER" | sha256sum | cut -d' ' -f1)"
 
+umask 077
+mkdir -p .runtime
+cat > .runtime/prod-test.env <<EOF
+BEARER=$BEARER
+SERVER_TOKEN_HASH=$SERVER_TOKEN_HASH
+EOF
+
 echo "Deploying $STACK_NAME to $REGION ..."
 
 parameter_overrides=("ServerTokenHash=$SERVER_TOKEN_HASH")
 if [[ -n "${SANDBOX_ASSUME_ROLE_ARN:-}" ]]; then
     parameter_overrides+=("SandboxTargetRoleArn=$SANDBOX_ASSUME_ROLE_ARN")
     echo "Sandbox mode will target external role: $SANDBOX_ASSUME_ROLE_ARN"
+else
+    echo "Sandbox mode will target the in-account sandbox role."
 fi
 
 aws cloudformation deploy \
@@ -89,7 +112,7 @@ EOF
 if command -v uv >/dev/null && [[ -f tools/pair_qr.py ]]; then
     echo "Pairing QR (scan with the phone in the Pair screen):"
     echo
-    uv run python -m tools.pair_qr \
+    uv run --extra tools python -m tools.pair_qr \
         --region "$REGION" \
         --row-key "${out[GateRowKey]}" \
         --access-key-id "${out[ControllerAccessKeyId]}" \

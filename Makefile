@@ -99,7 +99,7 @@ pair-qr-from-stack:
 	test -n "$$row_key"; \
 	test -n "$$access_key_id"; \
 	test -n "$$secret_access_key"; \
-	uv run python -m tools.pair_qr \
+	uv run --extra tools python -m tools.pair_qr \
 		--region "$(REGION)" \
 		--row-key "$$row_key" \
 		--access-key-id "$$access_key_id" \
