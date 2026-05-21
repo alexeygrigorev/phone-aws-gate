@@ -16,7 +16,6 @@ ENDPOINT = os.environ.get("DDB_ENDPOINT_URL", "http://dynamodb-local:8000")
 REGION = os.environ.get("AWS_DEFAULT_REGION", "eu-west-1")
 
 GATE_TABLE = "phone-aws-gate"
-NONCE_TABLE = "phone-aws-nonces"
 
 
 def wait_for_ddb(client, timeout: int = 30) -> None:
@@ -68,22 +67,15 @@ def main() -> None:
         [{"AttributeName": "token_hash", "KeyType": "HASH"}],
         [{"AttributeName": "token_hash", "AttributeType": "S"}],
     )
-    ensure_table(
-        client,
-        NONCE_TABLE,
-        [{"AttributeName": "nonce", "KeyType": "HASH"}],
-        [{"AttributeName": "nonce", "AttributeType": "S"}],
-    )
 
     # TTL is best-effort for tests; DDB Local supports it from 2.x onwards.
-    for table_name, attr in [(GATE_TABLE, "expires_at"), (NONCE_TABLE, "expires_at")]:
-        try:
-            client.update_time_to_live(
-                TableName=table_name,
-                TimeToLiveSpecification={"AttributeName": attr, "Enabled": True},
-            )
-        except ClientError as e:
-            print(f"  {table_name}: TTL enable skipped ({e.response['Error']['Code']})")
+    try:
+        client.update_time_to_live(
+            TableName=GATE_TABLE,
+            TimeToLiveSpecification={"AttributeName": "expires_at", "Enabled": True},
+        )
+    except ClientError as e:
+        print(f"  {GATE_TABLE}: TTL enable skipped ({e.response['Error']['Code']})")
 
     print("bootstrap done")
 

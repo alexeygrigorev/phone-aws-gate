@@ -1,87 +1,111 @@
-"""Tiny client for the control Lambda — used by the smoke test and CLI tools.
+"""Client that opens/closes the gate by writing a DynamoDB row directly.
 
-Mirrors what the Android app will do: sign requests with HMAC-SHA256, include
-timestamp + nonce headers, parse JSON responses. Kept dependency-free so it
-runs anywhere with the stdlib.
+This is what the Android app will do, and what the CLI/Makefile and smoke
+test use. The phone holds AWS credentials for a narrowly-scoped IAM user
+whose policy permits only PutItem/DeleteItem/GetItem on a single gate row.
+
+Local dev: point at DDB Local via endpoint_url + fake creds.
+Real AWS:  rely on the standard boto3 credential chain (env, ~/.aws/...).
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
-import secrets
+import os
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
-TIMESTAMP_HEADER = "X-Phone-Auth-Timestamp"
-NONCE_HEADER = "X-Phone-Auth-Nonce"
-SIGNATURE_HEADER = "X-Phone-Auth-Signature"
+import boto3
+from botocore.exceptions import ClientError
 
 
 @dataclass
-class Response:
-    status: int
-    body: Any
+class GateState:
+    active: bool
+    mode: str = ""
+    started_at: int = 0
+    expires_at: int = 0
+    note: str = ""
 
-    def ok(self) -> bool:
-        return 200 <= self.status < 300
 
+class GateClient:
+    """Reads and writes the single gate row by row_key (= token_hash)."""
 
-class ControlClient:
-    def __init__(self, base_url: str, hmac_secret: bytes, *, timeout: float = 5.0):
-        self.base_url = base_url.rstrip("/")
-        self.secret = hmac_secret
-        self.timeout = timeout
+    def __init__(
+        self,
+        *,
+        row_key: str,
+        table_name: str = "phone-aws-gate",
+        region: str = "eu-west-1",
+        endpoint_url: Optional[str] = None,
+        aws_access_key_id: Optional[str] = None,
+        aws_secret_access_key: Optional[str] = None,
+    ):
+        self.row_key = row_key
+        self.table_name = table_name
 
-    def _signed_call(self, method: str, path: str, body_obj: Optional[dict] = None) -> Response:
-        body = json.dumps(body_obj).encode() if body_obj is not None else b""
-        ts = int(time.time())
-        nonce = secrets.token_hex(16)
-        canon = f"{ts}\n{nonce}\n{method}\n{path}\n".encode() + body
-        sig = hmac.new(self.secret, canon, hashlib.sha256).hexdigest()
+        kwargs = {"region_name": region}
+        if endpoint_url:
+            kwargs["endpoint_url"] = endpoint_url
+        if aws_access_key_id and aws_secret_access_key:
+            kwargs["aws_access_key_id"] = aws_access_key_id
+            kwargs["aws_secret_access_key"] = aws_secret_access_key
+        elif endpoint_url:
+            # DDB Local accepts anything as long as creds are present.
+            kwargs.setdefault("aws_access_key_id", "local")
+            kwargs.setdefault("aws_secret_access_key", "local")
+        self._table = boto3.resource("dynamodb", **kwargs).Table(self.table_name)
 
-        headers = {
-            TIMESTAMP_HEADER: str(ts),
-            NONCE_HEADER: nonce,
-            SIGNATURE_HEADER: sig,
-        }
-        if body:
-            headers["Content-Type"] = "application/json"
-
-        req = urllib.request.Request(
-            self.base_url + path,
-            data=body if body else None,
-            method=method,
-            headers=headers,
+    @classmethod
+    def from_env(cls) -> "GateClient":
+        return cls(
+            row_key=os.environ["PHONE_AWS_ROW_KEY"],
+            table_name=os.environ.get("PHONE_AWS_TABLE", "phone-aws-gate"),
+            region=os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"),
+            endpoint_url=os.environ.get("DDB_ENDPOINT_URL") or None,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                payload = resp.read().decode()
-                return Response(status=resp.status, body=_maybe_json(payload))
-        except urllib.error.HTTPError as e:
-            payload = e.read().decode()
-            return Response(status=e.code, body=_maybe_json(payload))
 
-    def start(self, mode: str, duration_minutes: int = 60, note: str = "") -> Response:
-        return self._signed_call("POST", "/start", {
+    def start(self, mode: str, duration_minutes: int = 60, note: str = "") -> GateState:
+        if mode not in ("prod", "sandbox"):
+            raise ValueError(f"mode must be 'prod' or 'sandbox', got {mode!r}")
+        if duration_minutes <= 0 or duration_minutes > 24 * 60:
+            raise ValueError(f"duration_minutes must be 1..1440, got {duration_minutes}")
+
+        now = int(time.time())
+        expires_at = now + duration_minutes * 60
+        self._table.put_item(Item={
+            "token_hash": self.row_key,
+            "active": True,
             "mode": mode,
-            "duration_minutes": duration_minutes,
-            "note": note,
+            "started_at": now,
+            "expires_at": expires_at,
+            "note": note[:200],
         })
+        return GateState(
+            active=True, mode=mode, started_at=now, expires_at=expires_at, note=note,
+        )
 
-    def stop(self) -> Response:
-        return self._signed_call("POST", "/stop")
+    def stop(self) -> None:
+        self._table.delete_item(Key={"token_hash": self.row_key})
 
-    def status(self) -> Response:
-        return self._signed_call("POST", "/status")
+    def status(self) -> GateState:
+        """Return current gate state. active=False if row is missing or expired."""
+        try:
+            resp = self._table.get_item(Key={"token_hash": self.row_key})
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "?")
+            raise RuntimeError(f"DynamoDB error: {code}") from e
 
+        item = resp.get("Item")
+        if not item:
+            return GateState(active=False)
 
-def _maybe_json(s: str) -> Any:
-    try:
-        return json.loads(s)
-    except (ValueError, json.JSONDecodeError):
-        return s
+        now = int(time.time())
+        active = bool(item.get("active")) and int(item.get("expires_at", 0)) > now
+        return GateState(
+            active=active,
+            mode=str(item.get("mode", "")),
+            started_at=int(item.get("started_at", 0)),
+            expires_at=int(item.get("expires_at", 0)),
+            note=str(item.get("note", "")),
+        )

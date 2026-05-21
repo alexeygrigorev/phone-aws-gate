@@ -1,9 +1,7 @@
-"""DynamoDB access for the gate and nonce tables.
+"""DynamoDB access for the gate table.
 
 `phone-aws-gate`: PK `token_hash` (S). Single row at a time per token. TTL on
 `expires_at` is a safety net; the vendor Lambda also checks expiry on read.
-
-`phone-aws-nonces`: PK `nonce` (S). Conditional put to dedupe. TTL on `expires_at`.
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import boto3
-from botocore.exceptions import ClientError
 
 from . import config
 
@@ -83,20 +80,3 @@ def open_gate(token_hash: str, mode: str, duration_seconds: int, note: str = "")
 def close_gate(token_hash: str) -> None:
     table = _ddb().Table(config.GATE_TABLE_NAME)
     table.delete_item(Key={"token_hash": token_hash})
-
-
-def claim_nonce(nonce: str, ttl_seconds: int = config.HMAC_TIMESTAMP_WINDOW_SECONDS * 2) -> bool:
-    """Atomically reserve a nonce. Returns False if already seen."""
-    table = _ddb().Table(config.NONCE_TABLE_NAME)
-    expires_at = int(time.time()) + ttl_seconds
-    try:
-        table.put_item(
-            Item={"nonce": nonce, "expires_at": expires_at},
-            ConditionExpression="attribute_not_exists(#n)",
-            ExpressionAttributeNames={"#n": "nonce"},
-        )
-        return True
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return False
-        raise

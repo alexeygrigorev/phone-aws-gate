@@ -1,31 +1,14 @@
-# Local dev loop: DDB Local + bootstrap + control shim + vendor shim + test-server.
+# Local dev loop: DDB Local + bootstrap + vendor shim + test-server.
 #
-# Hardcoded local-dev secrets (not real credentials, do not use in prod):
+# The phone-side client (tools/phone_client.py) runs on the host and writes
+# directly to DDB Local on port 18000 — no control Lambda needed.
+#
+# Hardcoded local-dev values (not real credentials, do not use in prod):
 #   bearer:       local-bearer-token-not-secret
-#   token_hash:   sha256(bearer) = 4b3e9fad...534b6
-#   HMAC secret:  local-hmac-secret-not-secret
+#   row key:      sha256(bearer) = 4b3e9fad...534b6
 #
 # Run from this directory:   docker compose up
 # Or from project root:      make dev-up
-
-x-shim-base: &shim-base
-  build:
-    context: ..
-    dockerfile: docker/Dockerfile.shim
-  environment: &shim-env
-    DDB_ENDPOINT_URL: http://dynamodb-local:8000
-    AWS_DEFAULT_REGION: eu-west-1
-    AWS_ACCESS_KEY_ID: local
-    AWS_SECRET_ACCESS_KEY: local
-    SERVER_TOKEN_HASH: "4b3e9fadaac93f5d99f34f024bdfdcd8921b80d56b554d930d93f32471b534b6"
-    PROD_ROLE_ARN: arn:aws:iam::000000000000:role/phone-aws-prod-role
-    SANDBOX_ROLE_ARN: arn:aws:iam::000000000000:role/phone-aws-sandbox-role
-  volumes:
-    - ../src:/app/src:ro
-    - ../shims:/app/shims:ro
-  depends_on:
-    bootstrap:
-      condition: service_completed_successfully
 
 services:
   dynamodb-local:
@@ -48,26 +31,28 @@ services:
       - dynamodb-local
     restart: "no"
 
-  control:
-    <<: *shim-base
-    command: >
-      uvicorn shims.control_shim:app --host 0.0.0.0 --port 8001 --reload
-      --reload-dir /app/src --reload-dir /app/shims
-    environment:
-      <<: *shim-env
-      HMAC_SECRET: local-hmac-secret-not-secret
-      SKIP_RESOURCE_CHECK: "1"
-    ports:
-      - "8001:8001"
-
   vendor:
-    <<: *shim-base
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.shim
     command: >
       uvicorn shims.vendor_shim:app --host 0.0.0.0 --port 8002 --reload
       --reload-dir /app/src --reload-dir /app/shims
     environment:
-      <<: *shim-env
+      DDB_ENDPOINT_URL: http://dynamodb-local:8000
+      AWS_DEFAULT_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      SERVER_TOKEN_HASH: "4b3e9fadaac93f5d99f34f024bdfdcd8921b80d56b554d930d93f32471b534b6"
+      PROD_ROLE_ARN: arn:aws:iam::000000000000:role/phone-aws-prod-role
+      SANDBOX_ROLE_ARN: arn:aws:iam::000000000000:role/phone-aws-sandbox-role
       MOCK_STS: "1"
+    volumes:
+      - ../src:/app/src:ro
+      - ../shims:/app/shims:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
     ports:
       - "8002:8002"
 

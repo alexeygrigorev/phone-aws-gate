@@ -24,16 +24,14 @@ We want:
 sequenceDiagram
   autonumber
   participant P as Phone (Android app)
-  participant C as Control Lambda
   participant D as DynamoDB (gate row)
   participant V as Vendor Lambda
   participant S as Remote server (AWS SDK)
   participant T as STS
 
-  Note over P,C: "Start prod" tap
-  P->>C: POST /start {mode: "prod", duration_minutes: 60}<br/>HMAC(body+ts) signed
-  C->>D: PutItem {token_hash, active=true, mode=prod, expires_at}
-  C-->>P: 200 {expires_at}
+  Note over P,D: "Start prod" tap (biometric to decrypt IAM secret)
+  P->>D: PutItem {token_hash, active=true, mode=prod, expires_at}<br/>signed with phone's IAM user
+  D-->>P: 200
 
   Note over S,V: SDK refreshes creds (every ~15 min)
   S->>V: GET / (Authorization: bearer)
@@ -42,9 +40,8 @@ sequenceDiagram
   T-->>V: 15-min creds
   V-->>S: {AccessKeyId, SecretAccessKey, Token, Expiration}
 
-  Note over P,C: "Stop" tap
-  P->>C: POST /stop  HMAC signed
-  C->>D: DeleteItem
+  Note over P,D: "Stop" tap
+  P->>D: DeleteItem
   Note over S,V: Next refresh
   S->>V: GET /
   V->>D: GetItem (miss)
@@ -56,22 +53,22 @@ Three things to note:
 - The **phone never talks to the server** and the server never talks to the phone. They communicate indirectly through AWS (DynamoDB + Lambda). Server can be on a network with no inbound connectivity.
 - The **server's bearer token is stable** — set once at provisioning, never rotated by normal operation. Only the gate row changes.
 - The **SDK auto-refreshes** creds because we speak the [ECS container-credentials protocol](https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html). The server never sees creds older than 15 minutes.
+- The phone talks to DynamoDB directly using AWS SDK + IAM SigV4. An IAM policy restricts the phone's user to `Put/Delete/GetItem` on the single gate row — see [Security model](#security-model).
 
 ---
 
 ## Components
 
-| Component             | Hardcoded name           | Purpose                                                      |
-|-----------------------|--------------------------|--------------------------------------------------------------|
-| CloudFormation stack  | `phone-aws-auth`         | Single stack containing everything below                     |
-| Region                | `eu-west-1`              | Single region for MVP                                        |
-| DynamoDB table        | `phone-aws-gate`         | Stores the open/closed gate row, keyed by `token_hash`       |
-| DynamoDB table        | `phone-aws-nonces`       | Replay-protection: stores consumed HMAC nonces with short TTL |
-| Vendor Lambda         | `phone-aws-vendor`       | Server hits this for fresh STS creds                         |
-| Control Lambda        | `phone-aws-control`      | Phone hits this to open/close the gate                       |
-| Prod role             | `phone-aws-prod-role`    | Role the vendor assumes when `mode=prod`                     |
-| Sandbox role          | `phone-aws-sandbox-role` | Role the vendor assumes when `mode=sandbox`                  |
-| Lambda execution role | `phone-aws-lambda-role`  | Execution role for both Lambdas                              |
+| Component             | Hardcoded name             | Purpose                                                      |
+|-----------------------|----------------------------|--------------------------------------------------------------|
+| CloudFormation stack  | `phone-aws-auth`           | Single stack containing everything below                     |
+| Region                | `eu-west-1`                | Single region for MVP                                        |
+| DynamoDB table        | `phone-aws-gate`           | Stores the open/closed gate row, keyed by `token_hash`       |
+| Vendor Lambda         | `phone-aws-vendor`         | Server hits this for fresh STS creds                         |
+| IAM user (controller) | `phone-aws-controller`     | Phone authenticates as this user to write the gate row       |
+| Prod role             | `phone-aws-prod-role`      | Role the vendor assumes when `mode=prod`                     |
+| Sandbox role          | `phone-aws-sandbox-role`   | Role the vendor assumes when `mode=sandbox`                  |
+| Lambda execution role | `phone-aws-lambda-role`    | Execution role for the vendor Lambda                         |
 
 ### Why hardcoded?
 
@@ -87,17 +84,26 @@ This is the core of the design. Read carefully.
 
 ### What the phone stores
 
-| Item                        | Where stored                                         | If phone is stolen                                          |
-|-----------------------------|------------------------------------------------------|-------------------------------------------------------------|
-| HMAC secret                 | Android Keystore, hardware-backed, biometric-gated   | Attacker cannot extract it; cannot use it without biometric |
-| Control Lambda URL          | App preferences (plaintext)                          | Not secret — public function URL                            |
-| Cached gate status          | App preferences (plaintext)                          | Not secret — just a UI hint                                 |
-| AWS access keys             | **Never**                                            | N/A                                                         |
-| Server bearer token         | **Never**                                            | N/A                                                         |
+| Item                        | Where stored                                              | If phone is stolen                                          |
+|-----------------------------|-----------------------------------------------------------|-------------------------------------------------------------|
+| IAM access key ID + secret  | `EncryptedSharedPreferences`, biometric-gated decryption  | Attacker needs biometric (or PIN/password) to decrypt       |
+| AWS region                  | App preferences (plaintext)                               | Not secret                                                  |
+| Gate row key (`token_hash`) | App preferences (plaintext)                               | Not secret — it's a hash of the server's bearer             |
+| Cached gate status          | App preferences (plaintext)                               | Not secret — just a UI hint                                 |
+| Server bearer token         | **Never**                                                 | N/A                                                         |
 
-The phone has exactly one secret: the **HMAC key** used to authenticate calls to the control Lambda. It is generated inside the Android Keystore and *never leaves the secure element*. We require biometric authentication on every signing operation (`setUserAuthenticationRequired(true)`), so a thief who unlocks the device still cannot sign requests without your fingerprint or face.
+The phone has exactly one secret: the **IAM user's access key + secret**. These are stored encrypted using a master key in the Android Keystore that requires biometric (or device credential) authentication to release. Each `start`/`stop`/`status` operation triggers a biometric prompt before the SDK can sign the DynamoDB request.
 
-If the phone is lost: rotate the HMAC secret (which requires AWS deploy credentials, kept on your laptop, not the phone). The old key becomes useless.
+The IAM user (`phone-aws-controller`) has a policy that **only** allows `dynamodb:PutItem | DeleteItem | GetItem` on the single gate row in `phone-aws-gate`. It cannot read other rows, touch other tables, see any other AWS service. The worst an attacker with extracted creds can do is toggle the gate.
+
+**Lost phone → revoke in one CLI call:**
+
+```sh
+aws iam update-access-key --user-name phone-aws-controller \
+    --access-key-id <AKID> --status Inactive
+```
+
+The old credentials become useless instantly — no redeploy, no waiting, no manual env-var rotation. This native AWS revocation path is the main reason we chose IAM-direct over an HMAC-signed control Lambda (see [Major pivot](#major-pivot-from-hmac--control-lambda-to-iam-direct-2026-05-21) in the decisions log).
 
 ### What the server stores
 
@@ -120,28 +126,30 @@ If the server is compromised:
 |-----------------------------------|--------------------------|--------------------------------------------------------------------|
 | AWS admin credentials             | Deploy / rotate / repair | Use [aws-token-vending-machine][tvm] to mint these short-lived     |
 | Generated bearer token            | At deploy time only      | Shown once. Paste into the server's env. Then delete from laptop. |
-| Generated HMAC secret             | At pairing time only     | Shown once as QR code. Phone scans. Then delete from laptop.      |
+| Generated IAM access key + secret | At pairing time only     | Shown once as QR code. Phone scans. Then delete from laptop. Can also be re-issued by rotating the IAM access key. |
 
 [tvm]: https://github.com/alexeygrigorev/aws-token-vending-machine
 
 ### Threat scenarios
 
-| Threat                          | Outcome                                                                                          |
-|---------------------------------|--------------------------------------------------------------------------------------------------|
-| Phone lost, locked              | Hardware-backed HMAC key cannot be extracted. No exposure.                                       |
-| Phone lost, unlocked, no biometric | Attacker can open the gate. But they don't have the server's bearer, so cannot mint creds. They could open the gate hoping the legitimate server fetches creds and is somehow compromised — narrow attack. |
-| Phone lost, coerced biometric   | Attacker opens the gate. Server (if uncompromised) fetches creds and uses them legitimately. Operator detects via push notification (future work) and revokes. |
-| Server fully compromised        | Attacker has bearer, but gate is usually closed → 403. When opened: 15-min creds for current mode. Same blast radius as a brief direct credential grant. |
-| Control Lambda compromised      | Game over for the gate. IAM blast radius is still bounded by prod/sandbox role policies.         |
-| DynamoDB row tampered           | Only the Lambda role and the operator's AWS admin can write to the table. Not externally reachable. |
-| Replay attack on control Lambda | HMAC includes timestamp + nonce; Lambda rejects ts older than 60s and dedupes nonces within the window. |
+| Threat                                  | Outcome                                                                                          |
+|-----------------------------------------|--------------------------------------------------------------------------------------------------|
+| Phone lost, locked                      | IAM secret is encrypted at rest behind biometric/PIN. Attacker needs to unlock the device first. |
+| Phone lost, unlocked, no biometric set  | Attacker decrypts IAM creds, can flip the gate. Cannot mint AWS creds (needs server bearer). Revoke via `aws iam update-access-key`. |
+| Phone lost, coerced biometric           | Attacker decrypts IAM creds, flips the gate, can exfiltrate the access key for later use until you revoke. Same blast radius as having the unlocked phone (toggle gate only). |
+| Rooted phone, attacker dumps memory     | At signing time the access key is in process memory and could be extracted. Mitigation: revoke immediately, rotate. |
+| Server fully compromised                | Attacker has bearer, but gate is usually closed → 403. When opened: 15-min creds for current mode. Same blast radius as a brief direct credential grant. |
+| Vendor Lambda compromised               | Bad. IAM blast radius is still bounded by prod/sandbox role policies — that's why those policies should stay narrow. |
+| DynamoDB row tampered                   | Only the vendor Lambda role, the phone's controller user, and the operator's AWS admin can write to the table. The phone's user is locked to one row via `dynamodb:LeadingKeys`. |
+| Operator account compromised            | Same as if the AWS root account were compromised. Out of scope — the whole stack assumes the operator's AWS account is trustworthy. |
 
-### Why an HMAC and not OAuth / Cognito / mTLS / IAM SigV4
+### Why a narrow IAM user and not OAuth / Cognito / mTLS / HMAC
 
-- **HMAC + timestamp + nonce** is ~30 lines of code on both sides, requires no external identity provider, and the secret is a single string we can put in the Android Keystore as a hardware-bound key.
-- IAM SigV4 from a phone would require either embedding an IAM user's keys (which we're explicitly avoiding) or Cognito (complexity we don't need for a single-user toy).
-- mTLS is overkill and harder to provision on Android.
-- Trade-off: HMAC means a shared secret. Acceptable because there's exactly one client and the secret never leaves the secure element.
+- **IAM user + scoped policy** uses AWS-native auth. No extra moving parts (no control Lambda, no auth module, no nonces table). Revocation is one CLI call.
+- **HMAC** was the original design (see [Major pivot](#major-pivot-from-hmac--control-lambda-to-iam-direct-2026-05-21)). It's strictly stronger at rest (key hardware-bound in StrongBox, never extractable) but requires an entire control Lambda, an auth module, and a nonces table to make use of. And the HMAC secret has no AWS-native revoke story — you must redeploy or manually rotate a Lambda env var.
+- **OAuth / Cognito** is another whole identity stack for a single-user toy. Buys nothing we need.
+- **mTLS** is painful to provision on Android.
+- **Trade-off:** the IAM access key has to live in process memory at signing time (the AWS SDK needs it to compute SigV4). A rooted phone with a memory dumper could exfiltrate it. We accept this trade-off because the policy is locked to one row, and revocation is instant if compromise is suspected.
 
 ---
 
@@ -149,25 +157,17 @@ If the server is compromised:
 
 ### Startup health check
 
-When the Android app launches, it calls `GET /status` on the control Lambda (HMAC-signed). The Lambda:
+When the Android app launches, it calls `GetItem` on the gate row in the hardcoded `phone-aws-gate` table. Three outcomes:
 
-1. Verifies the table `phone-aws-gate` exists and is readable.
-2. Verifies both roles `phone-aws-prod-role` and `phone-aws-sandbox-role` exist.
-3. Reads the current gate row (if any).
-4. Returns a structured response:
+| DynamoDB response                | App behaviour                                                                       |
+|----------------------------------|--------------------------------------------------------------------------------------|
+| `200`, row present               | Gate is open. Show current state, enable Stop. Start buttons remain available.       |
+| `200`, no row                    | Gate is closed. Show "inactive". Enable Start buttons.                               |
+| `ResourceNotFoundException`      | Table doesn't exist → "stack not deployed correctly". Refuse to expose Start/Stop.   |
+| `AccessDeniedException`          | IAM creds wrong or revoked → "re-pair the phone".                                    |
+| Network/auth failure             | Show error, retry button.                                                            |
 
-```json
-{
-  "stack_name": "phone-aws-auth",
-  "region": "eu-west-1",
-  "resources_ok": true,
-  "prod_role_arn": "arn:aws:iam::123456789012:role/phone-aws-prod-role",
-  "sandbox_role_arn": "arn:aws:iam::123456789012:role/phone-aws-sandbox-role",
-  "gate": { "active": true, "mode": "sandbox", "expires_at": 1716300000 }
-}
-```
-
-The app checks `stack_name == "phone-aws-auth"` and `resources_ok == true`. If either fails, the app shows a "stack not deployed correctly" error and refuses to expose Start/Stop buttons. This is the user's "if things exist, continue; if not, stop" requirement.
+The check is self-validating: a successful `GetItem` proves the stack is deployed, the IAM user is valid, and the row key is correct. No separate "/status" endpoint is needed.
 
 ### Stop semantics
 
@@ -175,7 +175,7 @@ The app checks `stack_name == "phone-aws-auth"` and `resources_ok == true`. If e
 
 **Default mode**: graceful — existing 15-minute creds finish out their natural life. The server's running processes get up to 15 minutes of stale-but-valid AWS access after you tap Stop.
 
-**Instant kill** (optional, opt-in via a setting): in addition to deleting the row, the control Lambda attaches a deny policy to the active role with an `aws:TokenIssueTime < now` condition. Every live session for that role is invalidated immediately. On next "Start" the policy is removed. We do not enable this by default because the deny policy edits live IAM and is more invasive; it's a panic button.
+**Instant kill** (optional, opt-in via a setting): in addition to deleting the row, the panic-button path attaches a deny policy to the active role with an `aws:TokenIssueTime < now` condition. Every live session for that role is invalidated immediately. On next "Start" the policy is removed. We do not enable this by default because the deny policy edits live IAM and is more invasive; it's a panic button — and the phone's IAM user would need an extra permission to do it, which broadens the blast radius if the phone is lost. Likely it'll live in a separate operator-only script rather than the phone app.
 
 ### Session duration & auto-refresh
 
@@ -189,7 +189,7 @@ The gate row has a `expires_at` field which is also the DynamoDB TTL attribute. 
 
 ### Sessions and per-tap duration
 
-The default tap opens the gate for 60 minutes. The Android app has a duration picker (15min / 1h / 4h / 8h) — the value goes in `duration_minutes` on the `/start` request. The control Lambda enforces a server-side max (24 hours) to limit the damage of a coerced tap.
+The default tap opens the gate for 60 minutes. The Android app has a duration picker (15min / 1h / 4h / 8h) — the value translates into `expires_at = now + duration` on the row. The client validates the duration (max 24 hours) to limit the damage of a coerced tap. The vendor also enforces the cap by ignoring rows whose `expires_at` is past — so even if the client wrote a far-future `expires_at`, the rest of the system still works.
 
 ### One server per deployment (MVP)
 
@@ -218,9 +218,9 @@ You will need:
 
    Outputs (shown once):
    - Vendor Lambda URL
-   - Control Lambda URL
    - Server bearer token
-   - Phone HMAC secret (as a QR code in the terminal)
+   - Phone IAM access key ID + secret (as a QR code in the terminal)
+   - Gate row key (sha256 of the server bearer)
 
 3. **Configure the server**:
 
@@ -231,9 +231,9 @@ You will need:
 
    Persist these in your service's env / systemd unit / `.bashrc` — wherever makes sense for that server.
 
-4. **Pair the phone**: open the Android app, tap "Pair", scan the QR code. The app extracts the HMAC secret and control Lambda URL, generates a keystore entry, and stores the secret hardware-bound. The QR is then invalidated (you can delete it from the laptop).
+4. **Pair the phone**: open the Android app, tap "Pair", scan the QR code. The QR contains: AWS region, IAM access key ID, IAM secret, gate row key. The app stores these in `EncryptedSharedPreferences` behind a biometric-gated master key. The QR is then invalidated (you can delete it from the laptop).
 
-5. **Verify**: app launches, runs the startup health check, shows two big buttons.
+5. **Verify**: app launches, runs the startup health check (a `GetItem` on the gate row), shows two big buttons.
 
 ### Customizing IAM permissions
 
@@ -253,16 +253,13 @@ phone-aws-auth/
 ├── pyproject.toml                  # Python project: Lambdas + shims + tools
 ├── deploy.sh                       # one-shot deploy of the CloudFormation stack
 ├── src/
-│   └── phone_aws_auth/             # shared package: handlers + helpers
-│       ├── auth.py                 # HMAC sign + verify
+│   └── phone_aws_auth/             # shared package: vendor handler + helpers
 │       ├── config.py               # hardcoded names (table, lambdas, roles)
-│       ├── gate.py                 # DynamoDB read/write
+│       ├── gate.py                 # DynamoDB read/write (used by vendor)
 │       └── handlers/
-│           ├── vendor.py           # Lambda handler: mint creds
-│           └── control.py          # Lambda handler: /start /stop /status
-├── shims/                          # FastAPI wrappers that run the handlers locally
-│   ├── vendor_shim.py
-│   └── control_shim.py
+│           └── vendor.py           # Lambda handler: mint creds
+├── shims/                          # FastAPI wrapper that runs the vendor locally
+│   └── vendor_shim.py
 ├── docker/
 │   ├── docker-compose.yml          # DDB Local + bootstrap + shims + test-server
 │   ├── bootstrap_ddb.py            # creates the gate table on startup
@@ -280,7 +277,7 @@ phone-aws-auth/
     └── pair-qr.py                  # renders the pairing QR after deploy
 ```
 
-**Why a Python package, not `lambda/<name>/index.py` zip layout:** keeping handlers in a single package lets local shims and Lambda code share helpers (auth, config, gate) without duplicating them. The deploy script packages each Lambda by zipping the `phone_aws_auth` package plus a small `index.py` entry point that calls into `phone_aws_auth.handlers.<name>.handler`.
+**Why a Python package, not `lambda/<name>/index.py` zip layout:** keeping handlers in a single package lets the local shim and Lambda code share helpers (config, gate) without duplicating them. The deploy script packages the vendor Lambda by zipping the `phone_aws_auth` package plus a small `index.py` entry point that calls into `phone_aws_auth.handlers.vendor.handler`.
 
 ---
 
@@ -290,40 +287,36 @@ Two test loops — a fast local one with no AWS, and a slow end-to-end one with 
 
 ### Local loop (no AWS, no money, no waiting)
 
-The two Lambda handlers are pure Python functions; we wrap them in a thin FastAPI shim and run them locally. DynamoDB is replaced with [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html) in Docker. STS is mocked — the vendor returns fake creds, the goal is to exercise the wire protocol, not validate IAM.
+The vendor Lambda is a pure Python function; we wrap it in a thin FastAPI shim and run it locally. DynamoDB is replaced with [DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.html) in Docker. STS is mocked — the vendor returns fake creds, the goal is to exercise the wire protocol, not validate IAM.
 
 ```
 ┌─────────────────────────────┐
-│  Android emulator (Pixel)   │
-│    app → http://10.0.2.2    │── tap Start/Stop
+│  Android emulator (Pixel)   │── tap Start/Stop
+│  app uses AWS SDK directly  │
 └─────────────────────────────┘
               │
-              ▼ HMAC
-┌─────────────────────────────┐
-│  control-lambda-local       │── Python FastAPI wrapper around lambda/control/index.py
-│  port 8001                  │
-└─────────────────────────────┘
-              │
-              ▼ DDB protocol
+              │ DDB protocol (PutItem/DeleteItem/GetItem)
+              │ DDB Local accepts any creds — no IAM in local mode
+              ▼
 ┌─────────────────────────────┐
 │  DynamoDB Local             │── docker run amazon/dynamodb-local
-│  port 8000                  │
+│  host port 18000 → 8000     │
 └─────────────────────────────┘
               ▲
-              │ DDB protocol
+              │ DDB protocol (vendor reads the gate row)
 ┌─────────────────────────────┐
-│  vendor-lambda-local        │── Python FastAPI wrapper around lambda/vendor/index.py
+│  vendor-lambda-local        │── FastAPI wrapper around phone_aws_auth.handlers.vendor
 │  port 8002                  │── STS calls mocked, returns fake creds
 └─────────────────────────────┘
               ▲
               │ GET /  Authorization: <bearer>
 ┌─────────────────────────────┐
-│  test-server (Docker)       │── periodically curls vendor-lambda-local, logs 200/403
-│  env: AWS_CONTAINER_*       │
+│  test-server (Docker)       │── boto3 + ECS provider chain, real SDK loop
+│  env: AWS_CONTAINER_*       │── logs creds resolved / gate-closed
 └─────────────────────────────┘
 ```
 
-`make dev-up` starts all four (DDB Local, both Lambda shims, the test-server container). `make dev-down` tears them down. The Android emulator reaches the laptop via `10.0.2.2` (Android's magic loopback alias).
+`make dev-up` starts everything (DDB Local, the vendor shim, the boto3 test-server). `make dev-down` tears it down. The Android emulator reaches the laptop's DDB Local via `10.0.2.2:18000` (Android's magic loopback alias). The CLI (`make start-sandbox` / `make stop` / `make status`) writes directly to DDB Local from the host.
 
 This gives a sub-second dev loop: edit Lambda code, restart the FastAPI shim, retry from the app. The Docker test-server is a small Python script that loops every 5 seconds and prints whether it currently has access — perfect for live-watching a Start/Stop transition.
 
@@ -339,13 +332,13 @@ Once the local loop is green:
 ┌─────────────────────────────┐
 │  Android emulator (Pixel)   │
 └──────────────┬──────────────┘
-               │ HMAC over HTTPS
+               │ DDB protocol over HTTPS (SigV4 with phone IAM creds)
                ▼
 ┌─────────────────────────────┐
 │  AWS                        │
-│   control Lambda (real)     │
 │   vendor Lambda (real)      │
 │   DynamoDB (real)           │
+│   IAM user phone-aws-controller │
 │   prod-role / sandbox-role  │
 └──────────────┬──────────────┘
                ▲ Authorization: bearer
@@ -378,7 +371,7 @@ Pairing without a physical QR scan: the app has a hidden dev-mode "paste pairing
 
 | Layer                          | Tool                                | What it catches                                    |
 |--------------------------------|-------------------------------------|----------------------------------------------------|
-| HMAC signing (Kotlin)          | JUnit on JVM                        | Header format, timestamp handling, nonce dedupe    |
+| AWS SDK call construction      | JUnit on JVM                        | Region, table name, row-key plumbing, error mapping |
 | Request/response models        | Kotlin serialization round-trip     | Wire format drift                                  |
 | Lambda handler logic           | pytest, `moto` for AWS mocks        | DynamoDB row logic, role selection, error paths    |
 | Local end-to-end               | `make dev-up` + manual emulator     | Wire-protocol correctness, UI flow                 |
@@ -391,16 +384,38 @@ Pairing without a physical QR scan: the app has a hidden dev-mode "paste pairing
 
 A log of the choices we made and what we considered. Useful when reopening this project months from now or onboarding someone new.
 
+### Major pivot: from HMAC + control Lambda to IAM-direct (2026-05-21)
+
+The very first version of this project (commit `4387571`) had a control Lambda that the phone called over HTTPS, authenticated with HMAC-SHA256 + timestamp + nonce, with a dedicated `phone-aws-nonces` DynamoDB table for replay protection. After getting that fully working end-to-end (smoke test green, ~400 lines of control-plane code), we questioned whether the complexity was worth it. The walk-through:
+
+- **Observation:** the vendor side (Lambda + gate row in DDB) is identical to the original `aws-credentials-vending-machine`. The "complexity" was entirely in the control plane.
+- **Observation:** the client needs *some* secret regardless of approach — the only question is what kind. HMAC key vs IAM access key.
+- **HMAC's main win:** the key can be hardware-bound (Android StrongBox), so it cannot be exfiltrated even from a rooted phone. The signing operation happens inside the secure element.
+- **IAM's main wins:** (1) AWS-native revocation — `aws iam update-access-key --status Inactive` kills the credential instantly. With HMAC you have to redeploy the stack or manually rotate the Lambda env var. (2) Drop the entire control Lambda, the `auth.py` module, the nonces table, and the HMAC ceremony. ~400 lines and one Lambda gone.
+- **Crucial: the IAM blast radius can be made as narrow as the HMAC blast radius.** The IAM user gets a policy locked to `dynamodb:{Put,Delete,Get}Item` on a single row in a single table (via a `dynamodb:LeadingKeys` condition). Stolen creds let an attacker flip the gate. They can't read other tables, touch other services, or mint AWS creds — they still need the server's bearer for that.
+- **Threat model trade-off:** The HMAC key in StrongBox cannot be extracted by a rooted/sophisticated attacker. The IAM secret has to live in memory at signing time (the AWS SDK computes SigV4 with the raw bytes), so a rooted phone with a memory dumper can exfiltrate it. For a non-rooted Android phone with biometric-gated decryption, the two designs are equivalent against realistic attacks (lost phone, coerced biometric).
+- **Revocation tips the balance.** A lost phone with HMAC means redeploying the stack. With IAM it's one CLI call. Cheaper rotation makes "rotate when paranoid" a reasonable security posture, which compensates for the slightly weaker at-rest property.
+
+**Decision:** removed HMAC + nonces + control Lambda. Phone (and CLI) writes the DDB gate row directly using a narrowly-scoped IAM user. Vendor Lambda is unchanged.
+
+What this looks like in practice:
+- IAM user `phone-aws-controller` with a policy condition on `dynamodb:LeadingKeys`.
+- Phone holds `AccessKeyId` + `SecretAccessKey`, biometric-gated in `EncryptedSharedPreferences` on Android.
+- Phone code: `boto3.resource("dynamodb").Table("phone-aws-gate").put_item({...})`. ~10 lines.
+- Tests: same DDB Local stack, just no control shim. Phone client speaks DDB to local on port 18000.
+- Real-AWS deploy: phone speaks DDB on the real endpoint with the user's keys. Same code path.
+
 ### Architectural decisions
 
 | Decision                                                              | Rationale                                                                                                                |
 |-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
 | Build on `aws-credentials-vending-machine`, not `aws-token-vending-machine` | The former already solves auto-refresh via the ECS credential protocol. The latter pushes long-ish-lived creds to disk over SSH — loses auto-refresh, makes Stop messier (logging into the server to delete files). |
+| Phone writes DDB gate row directly via boto3 (post-pivot)              | See "Major pivot" above. Removes the control Lambda, the HMAC module, and the nonces table. Phone holds an IAM user's keys scoped to one row. |
 | Server uses ECS container-credentials protocol                        | Native AWS SDK support for auto-refresh. Server holds only a bearer token; SDK transparently re-fetches before expiry.   |
 | Phone never talks to the server directly                              | Server can be on a network with no inbound connectivity. All coordination flows through AWS, which is reachable from both. |
-| Phone never holds AWS credentials                                     | Lost phone never leaks AWS access. Only secret on the phone is a hardware-bound HMAC key, useless without the matching Lambda. |
+| Phone holds a narrowly-scoped IAM access key (post-pivot)             | See [Major pivot](#major-pivot-from-hmac--control-lambda-to-iam-direct-2026-05-21). Earlier we had a hardware-bound HMAC key with no AWS-native revoke; we swapped for an IAM user with a one-row policy to get instant revocation via `aws iam update-access-key`. |
 | Single static server bearer token, not rotated on each Start          | Avoids the phone needing to reach the server. Server config is set once at provisioning. The gate state lives in DynamoDB, not in the server. |
-| Two Lambdas (vendor + control), not one                               | Different audiences, different auth (bearer vs HMAC), different IAM blast radius. Easier to reason about and rate-limit independently. |
+| One Lambda (vendor), not two                                          | Post-pivot the control Lambda was removed; the phone writes DDB directly. Earlier we had two Lambdas with different auth (bearer vs HMAC). |
 | Hardcoded resource names                                              | Eliminates configuration error. Android app, deploy scripts, and IAM policies all reference the same constants. Startup health check verifies they exist. |
 | Single AWS region (`eu-west-1`)                                       | Matches `aws-token-vending-machine` default. Multi-region adds no value for a single-user toy.                           |
 | 15-minute STS sessions                                                | The STS minimum. Forces refresh churn, which is the lever Stop pulls on. Auto-refresh by SDK means no user-visible cost. |
@@ -411,19 +426,18 @@ A log of the choices we made and what we considered. Useful when reopening this 
 
 | Decision                                                              | Rationale                                                                                                                |
 |-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
-| HMAC + timestamp + nonce for phone → control Lambda                   | Minimal moving parts. One shared secret, hardware-bound on the phone, env var on the Lambda. No identity provider.       |
-| Considered and rejected: IAM SigV4 from phone                         | Would require embedding IAM user keys (rejected) or Cognito (overkill for one user).                                     |
+| Phone authenticates as a narrowly-scoped IAM user                     | AWS-native auth, AWS-native revocation (`update-access-key --status Inactive`). No extra services to operate. Policy is locked to one row in one table via `dynamodb:LeadingKeys`. |
+| IAM secret encrypted at rest via `EncryptedSharedPreferences`         | Master key in Android Keystore, biometric-required-per-decrypt. Equivalent to biometric-gated HMAC signing for unrooted phones. |
+| Considered and rejected: HMAC + control Lambda (the original design)  | Stronger at-rest (StrongBox-bound key can't be extracted) but ~400 lines of control-plane code and no AWS-native revoke. See [Major pivot](#major-pivot-from-hmac--control-lambda-to-iam-direct-2026-05-21). |
 | Considered and rejected: OAuth / Cognito                              | Another service to operate, another set of secrets. Buys nothing we need.                                                |
-| Considered and rejected: mTLS                                         | Provisioning client certs on Android is painful. HMAC achieves equivalent secrecy.                                       |
-| Biometric required on every HMAC signing                              | `setUserAuthenticationRequired(true)` on the keystore key. Defeats "thief unlocks the phone" attack.                     |
-| Timestamp + nonce, 60s validity window                                | Prevents replay. Window is short enough that compromise of an in-flight request is bounded.                              |
+| Considered and rejected: mTLS                                         | Provisioning client certs on Android is painful.                                                                          |
 
 ### Client-platform decisions
 
 | Decision                                                              | Rationale                                                                                                                |
 |-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
 | Native Android (Kotlin + Jetpack Compose)                             | The user has an Android phone. Native gives us the Android Keystore, biometric prompt, push notifications (future), home-screen widgets (future). |
-| Considered and rejected: PWA                                          | Web crypto can do HMAC but cannot use hardware-backed keys. Lower security ceiling.                                      |
+| Considered and rejected: PWA                                          | Web Crypto / WebAuthn don't compose cleanly with the AWS SDK's SigV4 path; no equivalent to `EncryptedSharedPreferences` for at-rest IAM secret storage. |
 | Considered and rejected: HTTP Shortcuts app                           | Fine for a 5-minute MVP, but no biometric gating, no path to widgets/notifications. The user wanted to commit to native. |
 | Min SDK: Android 9 (API 28)                                           | StrongBox available on API 28+; modern keystore APIs stable.                                                             |
 
@@ -434,7 +448,7 @@ A log of the choices we made and what we considered. Useful when reopening this 
 | One server per deployment (MVP)                                       | Data model supports many; UI assumes one. Defer multi-server until needed.                                               |
 | Sandbox role lives in a separate AWS account (optional)               | Bounds blast radius. Reuse `aws-token-vending-machine` `setup-sandbox` to create it. Single-account mode also supported. |
 | Default Start duration: 60 minutes; max: 24 hours                     | Common case is "give it an hour to do its task". Cap prevents a coerced tap leaving the gate open for a week.            |
-| Pairing via QR code in terminal                                       | Avoids ever sending the HMAC secret over the network. Operator runs deploy on laptop, phone scans the secret directly.   |
+| Pairing via QR code in terminal                                       | Avoids ever sending the IAM access key + secret over the network. Operator runs deploy on laptop, phone scans the secret directly. |
 
 ---
 
@@ -459,4 +473,5 @@ These are intentionally out of scope for MVP:
 - [aws-token-vending-machine](https://github.com/alexeygrigorev/aws-token-vending-machine) — bootstrap helper for creating sandbox Organizations accounts.
 - [ECS container-credentials provider](https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html) — the AWS SDK feature that does the auto-refresh.
 - [Revoking IAM role temporary credentials](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_revoke-sessions.html) — the `TokenIssueTime` deny-policy trick used by the instant-kill mode.
-- [Android Keystore — hardware-backed keys](https://developer.android.com/privacy-and-security/keystore) — the security primitive behind the phone's HMAC secret.
+- [Android Keystore — hardware-backed keys](https://developer.android.com/privacy-and-security/keystore) and [`EncryptedSharedPreferences`](https://developer.android.com/topic/security/data) — what the phone uses to encrypt the IAM secret at rest behind biometric auth.
+- [IAM condition keys for DynamoDB — `dynamodb:LeadingKeys`](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/specifying-conditions.html) — the IAM-policy primitive that locks the phone's user to a single row.
