@@ -49,5 +49,6 @@ dependencies {
     implementation(libs.aws.sdk.dynamodb)
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.biometric)
+    implementation(libs.zxing.android.embedded)
     debugImplementation(libs.androidx.ui.tooling)
 }

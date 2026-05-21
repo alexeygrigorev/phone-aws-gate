@@ -1,5 +1,6 @@
 package com.alexeygrigorev.phoneawsauth.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +26,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 
 @Composable
@@ -34,6 +37,25 @@ fun PairScreen(onDone: () -> Unit) {
 
     var payload by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+
+    fun applyPayload(text: String) {
+        runCatching { parse(text) }
+            .onSuccess {
+                settings.save(it)
+                onDone()
+            }
+            .onFailure { error = it.message ?: "Could not parse payload" }
+    }
+
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents.isNullOrBlank()) {
+            // user cancelled; ignore
+        } else {
+            payload = contents
+            applyPayload(contents)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -45,37 +67,44 @@ fun PairScreen(onDone: () -> Unit) {
     ) {
         Text("Pair with a deployment", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Paste the JSON printed by deploy.sh (the QR scanner comes later). " +
-                "Expected fields: rowKey, accessKeyId, secretAccessKey. " +
-                "region and table are optional (default eu-west-1 / phone-aws-gate).",
+            "Scan the QR shown by deploy.sh, or paste the JSON it printed " +
+                "(useful in the emulator without a working camera).",
             style = MaterialTheme.typography.bodySmall,
         )
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                error = null
+                scanLauncher.launch(
+                    ScanOptions()
+                        .setBeepEnabled(false)
+                        .setOrientationLocked(false)
+                        .setPrompt("Point the camera at the deploy.sh QR")
+                        .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                )
+            },
+        ) { Text("Scan QR") }
+
+        Spacer(Modifier.height(8.dp))
 
         OutlinedTextField(
             value = payload,
             onValueChange = { payload = it; error = null },
-            label = { Text("Pairing JSON") },
+            label = { Text("…or paste pairing JSON") },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(220.dp),
-            supportingText = { Text("Tap and paste") },
             isError = error != null,
         )
 
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
-        Button(
+        OutlinedButton(
             modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                runCatching { parse(payload) }
-                    .onSuccess {
-                        settings.save(it)
-                        onDone()
-                    }
-                    .onFailure { error = it.message ?: "Could not parse payload" }
-            },
+            onClick = { applyPayload(payload) },
             enabled = payload.isNotBlank(),
-        ) { Text("Save & pair") }
+        ) { Text("Save & pair (from pasted JSON)") }
 
         Spacer(Modifier.height(8.dp))
 
