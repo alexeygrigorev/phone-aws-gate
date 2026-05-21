@@ -47,5 +47,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.aws.sdk.dynamodb)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.biometric)
     debugImplementation(libs.androidx.ui.tooling)
 }

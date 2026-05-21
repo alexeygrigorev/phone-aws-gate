@@ -7,6 +7,8 @@ activityCompose = "1.9.3"
 composeBom = "2024.12.01"
 navigationCompose = "2.8.5"
 awsSdkKotlin = "1.3.85"
+securityCrypto = "1.1.0-alpha06"
+biometric = "1.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -20,6 +22,8 @@ androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 aws-sdk-dynamodb = { group = "aws.sdk.kotlin", name = "dynamodb", version.ref = "awsSdkKotlin" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

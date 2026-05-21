@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -31,6 +35,9 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun App() {
     val navController = rememberNavController()
+    // Bumped after a successful pair so MainScreen re-reads settings.
+    var pairVersion by remember { mutableIntStateOf(0) }
+
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
         NavHost(
             navController = navController,
@@ -38,10 +45,16 @@ private fun App() {
             modifier = Modifier.padding(padding),
         ) {
             composable(Routes.Main) {
-                MainScreen(onPair = { navController.navigate(Routes.Pair) })
+                MainScreen(
+                    onPair = { navController.navigate(Routes.Pair) },
+                    pairVersion = pairVersion,
+                )
             }
             composable(Routes.Pair) {
-                PairScreen(onDone = { navController.popBackStack() })
+                PairScreen(onDone = {
+                    pairVersion++
+                    navController.popBackStack()
+                })
             }
         }
     }

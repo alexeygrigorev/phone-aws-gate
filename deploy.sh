@@ -78,3 +78,15 @@ To revoke phone access immediately:
       --status Inactive
 
 EOF
+
+# Render the pairing QR if uv + qrcode are available.
+if command -v uv >/dev/null && [[ -f tools/pair_qr.py ]]; then
+    echo "Pairing QR (scan with the phone in the Pair screen):"
+    echo
+    uv run python -m tools.pair_qr \
+        --region "$REGION" \
+        --row-key "${out[GateRowKey]}" \
+        --access-key-id "${out[ControllerAccessKeyId]}" \
+        --secret-access-key "${out[ControllerSecretAccessKey]}" \
+        || echo "  (QR render failed — re-run \`uv run python -m tools.pair_qr --json ...\` manually)"
+fi
