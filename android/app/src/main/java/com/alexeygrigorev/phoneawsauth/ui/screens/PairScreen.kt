@@ -1,6 +1,11 @@
 package com.alexeygrigorev.phoneawsauth.ui.screens
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -26,6 +31,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.DecodeHintType
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.RGBLuminanceSource
+import com.google.zxing.common.HybridBinarizer
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
@@ -57,6 +67,16 @@ fun PairScreen(onDone: () -> Unit) {
         }
     }
 
+    val imageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching { decodeQrFromImage(context, uri) }
+            .onSuccess { contents ->
+                payload = contents
+                applyPayload(contents)
+            }
+            .onFailure { error = it.message ?: "Could not read QR from image" }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -85,6 +105,14 @@ fun PairScreen(onDone: () -> Unit) {
                 )
             },
         ) { Text("Scan QR") }
+
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                error = null
+                imageLauncher.launch("image/*")
+            },
+        ) { Text("Import screenshot") }
 
         Spacer(Modifier.height(8.dp))
 
@@ -119,6 +147,36 @@ fun PairScreen(onDone: () -> Unit) {
             Text("Cancel")
         }
     }
+}
+
+private fun decodeQrFromImage(context: Context, uri: Uri): String {
+    val bitmap = context.contentResolver.openInputStream(uri).use { stream ->
+        BitmapFactory.decodeStream(stream)
+    } ?: throw IllegalArgumentException("Could not open selected image")
+
+    val scaled = bitmap.scaleForQrDecode(maxSide = 1600)
+    val pixels = IntArray(scaled.width * scaled.height)
+    scaled.getPixels(pixels, 0, scaled.width, 0, 0, scaled.width, scaled.height)
+
+    val source = RGBLuminanceSource(scaled.width, scaled.height, pixels)
+    val binary = BinaryBitmap(HybridBinarizer(source))
+    val result = MultiFormatReader().decode(
+        binary,
+        mapOf(DecodeHintType.TRY_HARDER to true),
+    )
+    return result.text ?: throw IllegalArgumentException("No QR payload found in image")
+}
+
+private fun Bitmap.scaleForQrDecode(maxSide: Int): Bitmap {
+    val side = maxOf(width, height)
+    if (side <= maxSide) return this
+    val scale = maxSide.toFloat() / side.toFloat()
+    return Bitmap.createScaledBitmap(
+        this,
+        (width * scale).toInt().coerceAtLeast(1),
+        (height * scale).toInt().coerceAtLeast(1),
+        true,
+    )
 }
 
 internal fun parse(payload: String): PairedConfig {

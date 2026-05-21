@@ -85,6 +85,8 @@ Generate the host QR:
 
 Open AWS Gate on the Android phone, tap Pair, and scan the QR. The QR contains the host name, host row key, region/table, and the phone controller IAM key. It does not contain the host bearer token.
 
+If the terminal showing the QR is also on the phone, take a screenshot, open AWS Gate, tap Pair, then tap Import screenshot and select that image. The app decodes the QR from the screenshot. You can also use `./pair-qr.sh --json` and paste the JSON manually.
+
 Repeat `./install-aws-gate-env.sh` and `./pair-qr.sh` on each host. The app stores registered hosts and lets you select which one to control.
 
 ### 6. Open And Close Access
@@ -201,6 +203,14 @@ Render JSON instead of a terminal QR:
 
 ```sh
 ./pair-qr.sh --json
+```
+
+On-phone SSH flow:
+
+```sh
+./pair-qr.sh
+# take a screenshot of the terminal QR
+# AWS Gate -> Pair -> Import screenshot
 ```
 
 Use a custom host name in the QR:
