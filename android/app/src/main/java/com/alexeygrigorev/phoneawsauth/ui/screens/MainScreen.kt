@@ -132,7 +132,7 @@ private fun GateControl(
     var state by remember(client) { mutableStateOf<UiState>(UiState.Loading) }
 
     LaunchedEffect(client) {
-        state = UiState.Idle(client.status())
+        state = UiState.Idle(withContext(Dispatchers.IO) { client.status() })
     }
 
     val gateOp: suspend (String, suspend () -> GateClient.Result) -> GateClient.Result = { title, op ->
@@ -316,8 +316,9 @@ private fun runStop(
 
 private fun runRefresh(scope: CoroutineScope, client: GateClient, onState: (UiState) -> Unit) {
     onState(UiState.Busy(null))
-    scope.launch(Dispatchers.IO) {
-        onState(UiState.Idle(client.status()))
+    scope.launch {
+        val result = withContext(Dispatchers.IO) { client.status() }
+        onState(UiState.Idle(result))
     }
 }
 

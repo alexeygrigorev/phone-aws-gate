@@ -216,6 +216,14 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
+  VendorLambdaUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VendorLambda
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
   # ---------------------------------------------------------------------------
   # Controller IAM user — the phone (or CLI) authenticates as this user
   # and writes the gate row directly. Policy is locked to a single row.
