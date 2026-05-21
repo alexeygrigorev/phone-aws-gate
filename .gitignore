@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.zip
+
+# Local credentials & deployment outputs
+.env
+.env.local
+deploy-outputs.json
+pairing-qr.png
+pairing-secret.txt
+
+# Android
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp

@@ -1,0 +1,21 @@
+# Image for the FastAPI shims. Deps are baked in via uv; source is mounted at
+# runtime by docker-compose so uvicorn --reload picks up edits without rebuilds.
+FROM python:3.14-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install dependencies (and the project as editable) so the volume-mounted
+# /app/src is what gets imported at runtime.
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ src/
+COPY shims/ shims/
+RUN uv sync --frozen --extra shim --no-dev
+
+ENV PATH="/app/.venv/bin:$PATH"
