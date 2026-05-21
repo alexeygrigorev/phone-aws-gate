@@ -7,14 +7,20 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -34,6 +40,7 @@ import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -142,6 +149,12 @@ private fun GateControl(
         }
     }
 
+    // Duration picker. Values map to start(durationMinutes).
+    val durationOptions = listOf(15, 60, 240, 480)
+    var durationIdx by remember { mutableIntStateOf(1) }
+    val durationMinutes = durationOptions[durationIdx]
+    val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -160,18 +173,31 @@ private fun GateControl(
         HorizontalDivider()
         Spacer(Modifier.height(8.dp))
 
+        Text("Duration", style = MaterialTheme.typography.labelMedium)
+        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            durationOptions.forEachIndexed { i, mins ->
+                SegmentedButton(
+                    shape = SegmentedButtonDefaults.itemShape(i, durationOptions.size),
+                    onClick = { durationIdx = i },
+                    selected = i == durationIdx,
+                ) {
+                    Text(if (mins < 60) "${mins}m" else "${mins / 60}h")
+                }
+            }
+        }
+
         val busy = state is UiState.Busy
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = !busy,
-            onClick = { runStart(scope, gateOp, client, "sandbox") { state = it } },
-        ) { Text("Start sandbox (60 min)") }
+            onClick = { runStart(scope, gateOp, client, "sandbox", durationMinutes) { state = it } },
+        ) { Text("Start sandbox ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = !busy,
-            onClick = { runStart(scope, gateOp, client, "prod") { state = it } },
-        ) { Text("Start prod (60 min)") }
+            onClick = { runStart(scope, gateOp, client, "prod", durationMinutes) { state = it } },
+        ) { Text("Start prod ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
@@ -199,20 +225,44 @@ private fun GateControl(
 
 @Composable
 private fun StatusBlock(state: UiState) {
-    val text = when (state) {
-        UiState.Loading -> "Checking gate…"
-        is UiState.Busy -> "Working…"
+    when (state) {
+        UiState.Loading -> Text("Checking gate…", textAlign = TextAlign.Center)
+        is UiState.Busy -> Text("Working…", textAlign = TextAlign.Center)
         is UiState.Idle -> when (val r = state.result) {
-            is GateClient.Result.Closed -> "Gate: CLOSED"
-            is GateClient.Result.Open -> "Gate: OPEN (${r.mode})\nuntil ${formatEpoch(r.expiresAt)}"
-            is GateClient.Result.Error -> "ERROR: ${r.type}\n${r.message}"
+            is GateClient.Result.Closed ->
+                Text("Gate: CLOSED", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+            is GateClient.Result.Open -> OpenStatus(r)
+            is GateClient.Result.Error ->
+                Text("ERROR: ${r.type}\n${r.message}",
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.error)
         }
     }
+}
+
+@Composable
+private fun OpenStatus(r: GateClient.Result.Open) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
+    LaunchedEffect(r.expiresAt) {
+        while (true) {
+            now = System.currentTimeMillis() / 1000
+            delay(1000)
+        }
+    }
+    val remaining = (r.expiresAt - now).coerceAtLeast(0L)
     Text(
-        text = text,
+        text = "Gate: OPEN (${r.mode})\n${formatRemaining(remaining)} remaining · until ${formatEpoch(r.expiresAt)}",
         textAlign = TextAlign.Center,
         style = MaterialTheme.typography.bodyLarge,
     )
+}
+
+private fun formatRemaining(seconds: Long): String {
+    val h = seconds / 3600
+    val m = (seconds % 3600) / 60
+    val s = seconds % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
 private fun buildClient(c: PairedConfig): GateClient = GateClient(
@@ -234,12 +284,13 @@ private fun runStart(
     gateOp: suspend (String, suspend () -> GateClient.Result) -> GateClient.Result,
     client: GateClient,
     mode: String,
+    durationMinutes: Int,
     onState: (UiState) -> Unit,
 ) {
     onState(UiState.Busy(null))
     scope.launch {
         val r = gateOp("Open AWS gate ($mode)") {
-            withContext(Dispatchers.IO) { client.start(mode, durationMinutes = 60) }
+            withContext(Dispatchers.IO) { client.start(mode, durationMinutes) }
         }
         onState(UiState.Idle(r))
     }
