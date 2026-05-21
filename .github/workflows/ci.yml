@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Backend (lint + import smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: latest
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Sync env
+        run: uv sync --all-extras --group dev
+
+      - name: Import smoke (handlers + tools)
+        run: |
+          uv run python -c "
+          from phone_aws_auth import config, gate
+          from phone_aws_auth.handlers import vendor
+          from shims import vendor_shim
+          from tools import phone_client, pair_qr, smoke
+          print('all imports ok')
+          "
+
+      - name: cfn-lint
+        run: |
+          uv pip install --no-cache cfn-lint
+          uv run cfn-lint infra/template.yaml
+
+      - name: Bash syntax check
+        run: bash -n deploy.sh
+
+  android:
+    name: Android (assembleDebug)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('android/**/*.gradle*', 'android/**/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon

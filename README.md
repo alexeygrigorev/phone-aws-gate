@@ -86,13 +86,15 @@ This is the core of the design. Read carefully.
 
 | Item                        | Where stored                                              | If phone is stolen                                          |
 |-----------------------------|-----------------------------------------------------------|-------------------------------------------------------------|
-| IAM access key ID + secret  | `EncryptedSharedPreferences`, biometric-gated decryption  | Attacker needs biometric (or PIN/password) to decrypt       |
-| AWS region                  | App preferences (plaintext)                               | Not secret                                                  |
-| Gate row key (`token_hash`) | App preferences (plaintext)                               | Not secret — it's a hash of the server's bearer             |
-| Cached gate status          | App preferences (plaintext)                               | Not secret — just a UI hint                                 |
+| IAM access key ID + secret  | `EncryptedSharedPreferences`, master key in Keystore      | Encrypted with a hardware-bound master key (AES256-GCM)     |
+| AWS region                  | Same store (encrypted at rest)                            | Not secret either way                                       |
+| Gate row key (`token_hash`) | Same store (encrypted at rest)                            | Not secret — it's a hash of the server's bearer             |
 | Server bearer token         | **Never**                                                 | N/A                                                         |
 
-The phone has exactly one secret: the **IAM user's access key + secret**. These are stored encrypted using a master key in the Android Keystore that requires biometric (or device credential) authentication to release. Each `start`/`stop`/`status` operation triggers a biometric prompt before the SDK can sign the DynamoDB request.
+The phone has exactly one secret: the **IAM user's access key + secret**. Two security layers:
+
+1. **At rest:** the values live in `EncryptedSharedPreferences`, encrypted with a master key that is generated and stored inside the Android Keystore. The key never leaves the secure element; the encrypted values cannot be extracted from a powered-off device without breaking the Keystore.
+2. **Per operation:** every Start / Stop tap shows a `BiometricPrompt` (BIOMETRIC_STRONG). If the user can't authenticate, the IAM-signed DynamoDB request is never issued. This means an unlocked but un-attended phone cannot flip the gate by accident.
 
 The IAM user (`phone-aws-controller`) has a policy that **only** allows `dynamodb:PutItem | DeleteItem | GetItem` on the single gate row in `phone-aws-gate`. It cannot read other rows, touch other tables, see any other AWS service. The worst an attacker with extracted creds can do is toggle the gate.
 
@@ -231,9 +233,11 @@ You will need:
 
    Persist these in your service's env / systemd unit / `.bashrc` — wherever makes sense for that server.
 
-4. **Pair the phone**: open the Android app, tap "Pair", scan the QR code. The QR contains: AWS region, IAM access key ID, IAM secret, gate row key. The app stores these in `EncryptedSharedPreferences` behind a biometric-gated master key. The QR is then invalidated (you can delete it from the laptop).
+4. **Pair the phone**: open the Android app, tap "Pair", then either:
+   - **Scan QR** — point the camera at the QR `deploy.sh` rendered. The app decodes the JSON, validates the fields, saves to `EncryptedSharedPreferences`.
+   - **Paste JSON** — for emulators without a working camera, run `uv run python -m tools.pair_qr --json ...` to print just the payload, then paste it into the field on the Pair screen.
 
-5. **Verify**: app launches, runs the startup health check (a `GetItem` on the gate row), shows two big buttons.
+5. **Verify**: app launches, runs the startup health check (a `GetItem` on the gate row), shows the gate status. From there: pick a duration (15min / 1h / 4h / 8h), tap Start sandbox or Start prod, complete the biometric prompt, and the gate opens. The OPEN status block has a live countdown to expiry.
 
 ### Customizing IAM permissions
 
@@ -449,6 +453,17 @@ What this looks like in practice:
 | Sandbox role lives in a separate AWS account (optional)               | Bounds blast radius. Reuse `aws-token-vending-machine` `setup-sandbox` to create it. Single-account mode also supported. |
 | Default Start duration: 60 minutes; max: 24 hours                     | Common case is "give it an hour to do its task". Cap prevents a coerced tap leaving the gate open for a week.            |
 | Pairing via QR code in terminal                                       | Avoids ever sending the IAM access key + secret over the network. Operator runs deploy on laptop, phone scans the secret directly. |
+
+---
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push and PR:
+
+- **Backend job:** `uv sync`, import smoke for the Python package, `cfn-lint infra/template.yaml`, `bash -n deploy.sh`.
+- **Android job:** JDK 17 + Android SDK + Gradle cache + `./gradlew assembleDebug`.
+
+Neither job requires AWS credentials — the real-AWS deploy is verified manually by running `./deploy.sh` against an account you control.
 
 ---
 
