@@ -106,6 +106,30 @@ It creates:
 - `~/.config/aws-gate/env`: host-local bearer token and Lambda URL
 - `~/.aws/config`: default profile with `credential_process`
 
+More explicitly, the installer does this:
+
+1. Reads `.runtime/controller.json`, which was written by `./deploy.sh`, to get the Lambda Function URL.
+2. Generates a random bearer token for this host if one does not already exist.
+3. Writes the Lambda URL, bearer token, and region to `~/.config/aws-gate/env`.
+4. Computes this host's row key as `sha256(bearer)`. This row key is what the phone will later open or close in DynamoDB.
+5. Backs up the existing `~/.aws/config` if it exists.
+6. Writes the default AWS profile with a `credential_process` command:
+
+```ini
+[default]
+region = eu-west-1
+credential_process = python3 /path/to/phone-aws-gate/tools/install_aws_gate.py credential-process --env /home/user/.config/aws-gate/env
+```
+
+The host does not store AWS access keys. It stores only:
+
+- the Lambda credential endpoint
+- the host bearer token
+
+When AWS CLI or an AWS SDK needs credentials, it runs the `credential_process` command from `~/.aws/config`. That command reads `~/.config/aws-gate/env`, calls the Lambda with the bearer token, and prints AWS credentials in the JSON format expected by AWS CLI/SDKs.
+
+The Lambda hashes the bearer token, checks the matching DynamoDB gate row, and only calls STS if the phone has opened that row. If the row is closed, missing, or expired, the Lambda returns `403` and the host gets no credentials.
+
 No `.bashrc` or shell startup hook is required. In a fresh shell, AWS CLI/SDKs should show credentials from `custom-process` when the host gate is open:
 
 ```sh
