@@ -7,7 +7,7 @@ Each host gets its own random bearer token and its own DynamoDB gate row. The ph
 ## Current Shape
 
 - Sandbox-only: the vendable role is `phone-aws-sandbox-role` in the sandbox account.
-- Account setup is one-time: deploy the AWS Gate stack once per AWS account or sandbox account you want to use.
+- Account setup is one-time: deploy the AWS Gate CloudFormation stack once per AWS account or sandbox account you want to use.
 - Multi-host: each host has a local bearer in `~/.config/aws-gate/env`; `rowKey = sha256(bearer)`.
 - Host setup is per machine: install the credential provider and pair that host once.
 - Multi-account: the phone app can store hosts from different AWS Gate deployments. Each host QR points at the account/stack that created it.
@@ -21,7 +21,7 @@ Each host gets its own random bearer token and its own DynamoDB gate row. The ph
 
 There are two setup layers:
 
-1. Once per AWS account: deploy the AWS Gate stack.
+1. Once per AWS account: deploy the AWS Gate CloudFormation stack.
 2. Once per host: install the local credential provider and pair that host with the phone app.
 
 After that, normal usage is only: select host in the app, tap Start, run AWS CLI/SDK commands, tap Stop.
@@ -29,6 +29,8 @@ After that, normal usage is only: select host in the app, tap Start, run AWS CLI
 One stack can control many hosts in the same AWS account. A Lambda belongs to one stack and mints credentials for that stack's sandbox role. If you have two sandbox accounts, deploy the stack once in each account and pair hosts from both accounts into the same phone app. The app can store all of them.
 
 Pairing is per host, not per account. Each host has its own bearer token and DynamoDB row. The phone opens/closes that host's row, and that host's AWS config calls the Lambda URL from the stack that created it.
+
+Most AWS resource names are intentionally fixed: stack name, table name, Lambda name, controller user, and sandbox role name. That keeps pairing simple because the QR and host config only need to carry the values that differ per deployment or per host.
 
 ### 2. Clone On The Remote Machine
 
