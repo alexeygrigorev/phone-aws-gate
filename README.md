@@ -7,14 +7,30 @@ Each host gets its own random bearer token and its own DynamoDB gate row. The ph
 ## Current Shape
 
 - Sandbox-only: the vendable role is `phone-aws-sandbox-role` in the sandbox account.
+- Account setup is one-time: deploy the AWS Gate stack once per AWS account or sandbox account you want to use.
 - Multi-host: each host has a local bearer in `~/.config/aws-gate/env`; `rowKey = sha256(bearer)`.
+- Host setup is per machine: install the credential provider and pair that host once.
+- Multi-account: the phone app can store hosts from different AWS Gate deployments. Each host QR points at the account/stack that created it.
 - Any-shell AWS access: `./install-aws-gate-env.sh` configures `~/.aws/config` with `credential_process`, so AWS CLI/SDKs can resolve credentials without `.bashrc`.
 - Phone app: registers host QRs, remembers hosts, shows the selected host, and starts/stops that host's gate.
 - TTL safety: each Start writes `expires_at`; the Lambda refuses expired rows even before DynamoDB TTL cleanup runs.
 
 ## Quick Start
 
-### 1. Clone On The Remote Machine
+### 1. Understand The Setup Model
+
+There are two setup layers:
+
+1. Once per AWS account: deploy the AWS Gate stack.
+2. Once per host: install the local credential provider and pair that host with the phone app.
+
+After that, normal usage is only: select host in the app, tap Start, run AWS CLI/SDK commands, tap Stop.
+
+One stack can control many hosts in the same AWS account. A Lambda belongs to one stack and mints credentials for that stack's sandbox role. If you have two sandbox accounts, deploy the stack once in each account and pair hosts from both accounts into the same phone app. The app can store all of them.
+
+Pairing is per host, not per account. Each host has its own bearer token and DynamoDB row. The phone opens/closes that host's row, and that host's AWS config calls the Lambda URL from the stack that created it.
+
+### 2. Clone On The Remote Machine
 
 ```sh
 git clone git@github.com:alexeygrigorev/phone-aws-gate.git
@@ -22,22 +38,42 @@ cd phone-aws-gate
 uv sync --all-extras --group dev
 ```
 
-### 2. Use A Sandbox Account
+### 3. Prepare A Sandbox Account
 
 Using a dedicated sandbox AWS account is recommended. It bounds the blast radius if a remote machine is compromised while its gate is open.
 
-You can create or select the sandbox account however you prefer. `aws-sandbox-cli` / `aws-token-vending-machine` is the easiest setup path because it can create the sandbox environment and transfer temporary deploy credentials onto the remote machine. The CLI is only needed for setup; AWS Gate does not depend on it after deployment.
+You can create or select the sandbox account however you prefer. The easiest path is [aws-sandbox-cli](https://github.com/alexeygrigorev/aws-sandbox-cli), which can create or verify an AWS Organizations sandbox account and mint temporary credentials for it. This helper is only needed for setup; AWS Gate does not depend on it after deployment.
 
-On the remote machine, export temporary deploy credentials for the sandbox account:
+On your workstation, create or verify the sandbox account once:
 
 ```sh
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_SESSION_TOKEN=...
-export AWS_DEFAULT_REGION=eu-west-1
+git clone https://github.com/alexeygrigorev/aws-sandbox-cli.git
+cd aws-sandbox-cli
+uv sync
+cp .env.example .env
+$EDITOR .env
+uv run aws-sandbox-cli setup-sandbox
 ```
 
-### 3. Deploy The Stack
+Then mint temporary sandbox credentials and send them to the remote machine:
+
+```sh
+uv run aws-sandbox-cli creds \
+  --remote-host <ssh-host> \
+  --remote-path '~/git/phone-aws-gate/.env'
+```
+
+On the remote machine, load those temporary credentials before deploying:
+
+```sh
+cd ~/git/phone-aws-gate
+set -a; . ./.env; set +a
+aws sts get-caller-identity
+```
+
+You only need this temporary deploy credential step when creating or updating the AWS Gate stack for that account.
+
+### 4. Deploy The Stack
 
 ```sh
 ./deploy.sh
@@ -53,7 +89,9 @@ This creates or updates:
 
 The deploy writes controller metadata to `.runtime/controller.json`. That file is gitignored and contains the phone controller IAM secret.
 
-### 4. Install AWS Gate On A Host
+Repeat this deploy step only when you want to update the stack in that AWS account. You do not deploy again for every host.
+
+### 5. Install AWS Gate On A Host
 
 Run this on each host you want the phone to control:
 
@@ -75,7 +113,7 @@ aws sts get-caller-identity
 
 When the gate is closed, SDK credential resolution fails with `HTTP 403`.
 
-### 5. Register The Host In The Phone App
+### 6. Register The Host In The Phone App
 
 Generate the host QR:
 
@@ -89,7 +127,7 @@ If the terminal showing the QR is also on the phone, take a screenshot, open AWS
 
 Repeat `./install-aws-gate-env.sh` and `./pair-qr.sh` on each host. The app stores registered hosts and lets you select which one to control.
 
-### 6. Open And Close Access
+### 7. Open And Close Access
 
 In the app:
 
@@ -305,8 +343,7 @@ phone-aws-auth-<tag>-debug.apk
 
 ## References
 
-- [aws-credentials-vending-machine](https://github.com/alexeygrigorev/aws-credentials-vending-machine)
-- [aws-token-vending-machine](https://github.com/alexeygrigorev/aws-token-vending-machine)
+- [aws-sandbox-cli](https://github.com/alexeygrigorev/aws-sandbox-cli)
 - [ECS container credentials provider](https://docs.aws.amazon.com/sdkref/latest/guide/feature-container-credentials.html)
 - [Android Keystore](https://developer.android.com/privacy-and-security/keystore)
 - [EncryptedSharedPreferences](https://developer.android.com/topic/security/data)
