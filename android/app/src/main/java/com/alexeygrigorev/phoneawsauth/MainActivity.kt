@@ -1,6 +1,7 @@
 package com.alexeygrigorev.phoneawsauth
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,14 +22,26 @@ import com.alexeygrigorev.phoneawsauth.ui.screens.MainScreen
 import com.alexeygrigorev.phoneawsauth.ui.screens.PairScreen
 import com.alexeygrigorev.phoneawsauth.ui.screens.parse
 import com.alexeygrigorev.phoneawsauth.ui.theme.PhoneAwsAuthTheme
+import org.json.JSONArray
 import java.util.Base64
 
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (BuildConfig.DEBUG) {
-            debugPairingPayload()?.let { payload ->
-                runCatching { PairedSettings(this).save(parse(payload)) }
+            if (intent.getBooleanExtra("skip_biometric", false)) {
+                getSharedPreferences("phone-aws-debug", MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("skip_biometric", true)
+                    .apply()
+            }
+            debugPairingPayloads().takeIf { it.isNotEmpty() }?.let { payloads ->
+                runCatching {
+                    PairedSettings(this).saveAll(payloads.map { payload -> parse(payload) })
+                    Log.i("AwsGateDebug", "Saved ${payloads.size} debug host(s)")
+                }.onFailure {
+                    Log.e("AwsGateDebug", "Debug pairing failed", it)
+                }
             }
         }
         enableEdgeToEdge()
@@ -39,11 +52,16 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    private fun debugPairingPayload(): String? {
-        intent.getStringExtra("pairing_json")?.let { return it }
-        return intent.getStringExtra("pairing_json_b64")?.let {
-            String(Base64.getDecoder().decode(it), Charsets.UTF_8)
+    private fun debugPairingPayloads(): List<String> {
+        intent.getStringExtra("pairing_jsons_b64")?.let { encoded ->
+            val raw = String(Base64.getDecoder().decode(encoded), Charsets.UTF_8)
+            val arr = JSONArray(raw)
+            return (0 until arr.length()).map { idx -> arr.getJSONObject(idx).toString() }
         }
+        intent.getStringExtra("pairing_json")?.let { return listOf(it) }
+        return intent.getStringExtra("pairing_json_b64")?.let {
+            listOf(String(Base64.getDecoder().decode(it), Charsets.UTF_8))
+        } ?: emptyList()
     }
 }
 

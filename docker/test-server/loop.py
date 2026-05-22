@@ -33,6 +33,7 @@ from botocore.exceptions import (
 INTERVAL = int(os.environ.get("INTERVAL_SECONDS", "5"))
 TRY_STS = os.environ.get("TRY_STS") == "1"
 STS_TIMEOUT = float(os.environ.get("STS_TIMEOUT", "3"))
+STS_ENDPOINT_URL = os.environ.get("STS_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_STS")
 
 
 def resolve_creds() -> tuple[str, str | None, str | None]:
@@ -60,7 +61,10 @@ def resolve_creds() -> tuple[str, str | None, str | None]:
 
 def try_sts(access_key: str) -> str:
     config = Config(connect_timeout=STS_TIMEOUT, read_timeout=STS_TIMEOUT, retries={"max_attempts": 1})
-    sts = boto3.client("sts", config=config)
+    kwargs = {"config": config}
+    if STS_ENDPOINT_URL:
+        kwargs["endpoint_url"] = STS_ENDPOINT_URL
+    sts = boto3.client("sts", **kwargs)
     try:
         arn = sts.get_caller_identity()["Arn"]
         return f"STS ok: {arn}"
@@ -75,6 +79,7 @@ def try_sts(access_key: str) -> str:
 
 def main() -> None:
     print(f"test-server: AWS_CONTAINER_CREDENTIALS_FULL_URI={os.environ.get('AWS_CONTAINER_CREDENTIALS_FULL_URI')!r}")
+    print(f"test-server: STS_ENDPOINT_URL={STS_ENDPOINT_URL!r}")
     print(f"test-server: polling every {INTERVAL}s (TRY_STS={'on' if TRY_STS else 'off'})")
     while True:
         ts = time.strftime("%Y-%m-%dT%H:%M:%S")

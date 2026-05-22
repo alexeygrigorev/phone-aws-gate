@@ -17,6 +17,7 @@ data class PairedConfig(
     val rowKey: String,
     val accessKeyId: String,
     val secretAccessKey: String,
+    val ddbEndpoint: String? = null,
 ) {
     companion object {
         // Hardcoded names per the deploy contract; user-facing pairing payloads
@@ -63,6 +64,7 @@ class PairedSettings(context: Context) {
                     rowKey = obj.getString("rowKey"),
                     accessKeyId = obj.getString("accessKeyId"),
                     secretAccessKey = obj.getString("secretAccessKey"),
+                    ddbEndpoint = obj.optString("ddbEndpoint").ifBlank { null },
                 )
             }
         }
@@ -88,6 +90,7 @@ class PairedSettings(context: Context) {
             rowKey = prefs.getString(KEY_ROW_KEY, "")!!,
             accessKeyId = prefs.getString(KEY_ACCESS_KEY_ID, "")!!,
             secretAccessKey = prefs.getString(KEY_SECRET_ACCESS_KEY, "")!!,
+            ddbEndpoint = null,
         )
     }
 
@@ -99,10 +102,19 @@ class PairedSettings(context: Context) {
         writeHosts(updated, config.rowKey)
     }
 
+    fun saveAll(configs: List<PairedConfig>) {
+        if (configs.isEmpty()) return
+        val byRowKey = linkedMapOf<String, PairedConfig>()
+        hosts().forEach { byRowKey[it.rowKey] = it }
+        configs.forEach { byRowKey[it.rowKey] = it }
+        val updated = byRowKey.values.sortedBy { it.name.lowercase() }
+        writeHosts(updated, configs.last().rowKey)
+    }
+
     fun select(rowKey: String) {
         prefs.edit()
             .putString(KEY_SELECTED_ROW_KEY, rowKey)
-            .apply()
+            .commit()
     }
 
     fun remove(rowKey: String) {
@@ -115,7 +127,8 @@ class PairedSettings(context: Context) {
                 .put("table", host.table)
                 .put("rowKey", host.rowKey)
                 .put("accessKeyId", host.accessKeyId)
-                .put("secretAccessKey", host.secretAccessKey))
+                .put("secretAccessKey", host.secretAccessKey)
+                .put("ddbEndpoint", host.ddbEndpoint))
         }
         val edit = prefs.edit()
             .putString(KEY_HOSTS, arr.toString())
@@ -126,7 +139,7 @@ class PairedSettings(context: Context) {
             edit.putString(KEY_SELECTED_ROW_KEY, selected)
         }
         edit
-            .apply()
+            .commit()
     }
 
     private fun writeHosts(hosts: List<PairedConfig>, selectedRowKey: String) {
@@ -138,7 +151,8 @@ class PairedSettings(context: Context) {
                 .put("table", host.table)
                 .put("rowKey", host.rowKey)
                 .put("accessKeyId", host.accessKeyId)
-                .put("secretAccessKey", host.secretAccessKey))
+                .put("secretAccessKey", host.secretAccessKey)
+                .put("ddbEndpoint", host.ddbEndpoint))
         }
         prefs.edit()
             .putString(KEY_HOSTS, arr.toString())
@@ -149,7 +163,7 @@ class PairedSettings(context: Context) {
             .remove(KEY_ROW_KEY)
             .remove(KEY_ACCESS_KEY_ID)
             .remove(KEY_SECRET_ACCESS_KEY)
-            .apply()
+            .commit()
     }
 
     @Deprecated("Use save(config), kept only as documentation of legacy keys.")
@@ -165,7 +179,7 @@ class PairedSettings(context: Context) {
     }
 
     fun clear() {
-        prefs.edit().clear().apply()
+        prefs.edit().clear().commit()
     }
 
     private companion object {

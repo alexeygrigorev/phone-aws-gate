@@ -207,5 +207,6 @@ internal fun parse(payload: String): PairedConfig {
         rowKey = rowKey,
         accessKeyId = accessKeyId,
         secretAccessKey = secretAccessKey,
+        ddbEndpoint = obj.optString("ddbEndpoint").ifBlank { null },
     )
 }

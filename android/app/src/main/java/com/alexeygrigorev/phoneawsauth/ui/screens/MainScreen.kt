@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import com.alexeygrigorev.phoneawsauth.BuildConfig
 import com.alexeygrigorev.phoneawsauth.auth.BiometricResult
 import com.alexeygrigorev.phoneawsauth.auth.findFragmentActivity
 import com.alexeygrigorev.phoneawsauth.auth.requireBiometric
@@ -79,7 +80,9 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
 
     // Biometric is required for paired (real-AWS) operations, skipped for
     // local-dev (DDB Local can't escape the emulator anyway).
-    val requireBio = paired != null
+    val debugSkipBiometric = BuildConfig.DEBUG &&
+        context.getSharedPreferences("phone-aws-debug", 0).getBoolean("skip_biometric", false)
+    val requireBio = paired != null && !debugSkipBiometric
 
     GateControl(
         client = client,
@@ -291,7 +294,7 @@ private fun buildClient(c: PairedConfig): GateClient = GateClient(
     awsRegion = c.region,
     accessKeyId = c.accessKeyId,
     secretAccessKey = c.secretAccessKey,
-    // Paired config implies real AWS — no DDB Local endpoint.
+    ddbEndpoint = c.ddbEndpoint,
 )
 
 private fun formatEpoch(epochSeconds: Long): String {

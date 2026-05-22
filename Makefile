@@ -10,7 +10,7 @@ REGION ?= eu-west-1
 
 CLI_ENV := PHONE_AWS_ROW_KEY=$(LOCAL_ROW_KEY) DDB_ENDPOINT_URL=$(LOCAL_DDB_URL)
 
-.PHONY: help dev-up dev-down dev-restart dev-logs dev-ps dev-test \
+.PHONY: help dev-up dev-down dev-restart dev-logs dev-ps dev-test e2e \
         android-build android-test android-install android-launch android-logs android-ready local-emulator-ready \
         pair-qr-from-stack \
         start-sandbox stop status \
@@ -23,7 +23,8 @@ help:
 	@echo "  make dev-restart    restart the vendor shim (picks up code edits)"
 	@echo "  make dev-logs       tail logs"
 	@echo "  make dev-ps         list running services"
-	@echo "  make dev-test       run the end-to-end smoke test"
+	@echo "  make dev-test       run the local Docker smoke test"
+	@echo "  make e2e            run all end-to-end tests"
 	@echo
 	@echo "Android emulator:"
 	@echo "  make android-build  build the debug APK"
@@ -62,6 +63,9 @@ dev-ps:
 
 dev-test:
 	$(CLI_ENV) uv run python -m tools.smoke
+
+e2e:
+	uv run python -m tools.e2e_two_hosts $(E2E_ARGS)
 
 android-build:
 	cd android && ./gradlew assembleDebug

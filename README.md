@@ -242,6 +242,15 @@ bash -n deploy.sh install-aws-gate-env.sh pair-qr.sh
 python3 -m py_compile tools/install_aws_gate.py tools/pair_qr.py
 ```
 
+End-to-end tests:
+
+```sh
+make e2e
+```
+
+This runs the full reproducible e2e suite. The current e2e registers two host payloads in the emulator, opens only one host through the app UI, runs two Docker server containers against the local Lambda shim, and verifies that the open host receives credentials through a local fake STS while the closed host gets refused.
+It then swaps the active host in the emulator UI and verifies that the two containers swap behavior. The script starts and stops the local Docker containers itself.
+
 Android checks:
 
 ```sh
