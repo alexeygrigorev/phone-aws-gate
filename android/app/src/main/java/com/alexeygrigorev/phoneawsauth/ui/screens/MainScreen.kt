@@ -171,6 +171,27 @@ private fun GateControl(
     val durationMinutes = durationOptions[durationIdx]
     val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
 
+    val rawResult = (state as? UiState.Idle)?.result
+    // Tick once per second whenever we have an Open result so the UI can flip
+    // to CLOSED at expiry instead of showing "0:00 remaining" forever.
+    var nowSec by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
+    LaunchedEffect(rawResult) {
+        if (rawResult is GateClient.Result.Open) {
+            while (true) {
+                nowSec = System.currentTimeMillis() / 1000
+                delay(1000)
+            }
+        }
+    }
+    val displayResult = effectiveResult(rawResult, nowSec)
+    val displayState: UiState = when (state) {
+        is UiState.Idle -> displayResult?.let { UiState.Idle(it) } ?: state
+        else -> state
+    }
+    val busy = state is UiState.Busy
+    val gateActionsEnabled = canRunGateAction(result = displayResult, busy = busy)
+    val isOpen = displayResult is GateClient.Result.Open
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -192,7 +213,7 @@ private fun GateControl(
                 ) { Text(if (host.rowKey == selectedRowKey) "Selected: ${host.name}" else "Use ${host.name}") }
             }
         }
-        StatusBlock(state)
+        StatusBlock(displayState)
 
         Spacer(Modifier.height(8.dp))
         HorizontalDivider()
@@ -211,16 +232,15 @@ private fun GateControl(
             }
         }
 
-        val busy = state is UiState.Busy
-        val gateActionsEnabled = canRunGateAction(
-            result = (state as? UiState.Idle)?.result,
-            busy = busy,
-        )
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = gateActionsEnabled,
-            onClick = { runStart(scope, gateOp, client, "sandbox", durationMinutes) { state = it } },
-        ) { Text("Start ($durationLabel)") }
+            onClick = {
+                runStart(scope, gateOp, client, "sandbox", durationMinutes, isExtend = isOpen) {
+                    state = it
+                }
+            },
+        ) { Text(if (isOpen) "Extend ($durationLabel)" else "Start ($durationLabel)") }
 
         Button(
             modifier = Modifier.fillMaxWidth(),
@@ -308,11 +328,13 @@ private fun runStart(
     client: GateClient,
     mode: String,
     durationMinutes: Int,
+    isExtend: Boolean = false,
     onState: (UiState) -> Unit,
 ) {
     onState(UiState.Busy(null))
     scope.launch {
-        val r = gateOp("Open AWS gate ($mode)") {
+        val title = if (isExtend) "Extend AWS gate ($mode)" else "Open AWS gate ($mode)"
+        val r = gateOp(title) {
             withContext(Dispatchers.IO) { client.start(mode, durationMinutes) }
         }
         onState(UiState.Idle(r))
@@ -347,4 +369,12 @@ private fun runRefresh(scope: CoroutineScope, client: GateClient, onState: (UiSt
 
 internal fun canRunGateAction(result: GateClient.Result?, busy: Boolean): Boolean {
     return !busy && result != null && result !is GateClient.Result.Error
+}
+
+internal fun effectiveResult(raw: GateClient.Result?, nowSec: Long): GateClient.Result? {
+    return if (raw is GateClient.Result.Open && raw.expiresAt <= nowSec) {
+        GateClient.Result.Closed
+    } else {
+        raw
+    }
 }
