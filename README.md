@@ -205,7 +205,7 @@ The phone stores registered host configs in `EncryptedSharedPreferences`, backed
 - row key (`sha256(host bearer)`)
 - controller IAM access key ID and secret
 
-The phone never stores the host bearer token. Start/Stop operations require Android biometric auth.
+The phone never stores the host bearer token. Opening or extending AWS access requires Android biometric auth. Stop closes the gate without biometric auth so access can be shut off quickly.
 
 The controller IAM user can `GetItem`, `PutItem`, and `DeleteItem` in the `phone-aws-gate` table. That means a stolen unlocked phone can toggle registered host rows, but it still cannot mint AWS credentials without a host bearer.
 
@@ -242,6 +242,8 @@ Then register the new QR in the phone app.
 The Lambda hashes the incoming bearer and reads that exact gate row. If the row is missing, inactive, expired, or has an unsupported mode, it returns 403/500 and does not call STS.
 
 The vendable sandbox role policy is currently broad (`Action: "*"`, `Resource: "*"`) because the recommended deployment target is a dedicated sandbox account. Narrow `phone-aws-sandbox-role` in `infra/template.yaml` if the sandbox account is shared or contains important resources.
+
+Role permissions intentionally live inline in `infra/template.yaml` for now. There is only one vendable role, so keeping the policy next to the role makes deploy review simpler than introducing separate permission files.
 
 ## Operational Details
 

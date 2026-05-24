@@ -96,23 +96,24 @@ class GateClient(
                 tableName = table
                 key = mapOf("token_hash" to AttributeValue.S(rowKey))
             }
-            val item = client().use { it.getItem(req) }.item
-                ?: return@runCatching Result.Closed as Result
-
-            val active = (item["active"] as? AttributeValue.Bool)?.value ?: false
-            val expiresAt = (item["expires_at"] as? AttributeValue.N)?.value?.toLongOrNull() ?: 0L
-            val now = System.currentTimeMillis() / 1000
-
-            if (!active || expiresAt <= now) {
-                Result.Closed
-            } else {
-                Result.Open(
-                    mode = (item["mode"] as? AttributeValue.S)?.value ?: "",
-                    startedAt = (item["started_at"] as? AttributeValue.N)?.value?.toLongOrNull() ?: 0L,
-                    expiresAt = expiresAt,
-                    note = (item["note"] as? AttributeValue.S)?.value ?: "",
-                )
-            }
+            resultFromItem(client().use { it.getItem(req) }.item, System.currentTimeMillis() / 1000)
         }.getOrElse { Result.Error(it::class.simpleName ?: "Error", it.message ?: "") }
     }
+}
+
+internal fun resultFromItem(item: Map<String, AttributeValue>?, now: Long): GateClient.Result {
+    item ?: return GateClient.Result.Closed
+
+    val active = (item["active"] as? AttributeValue.Bool)?.value ?: false
+    val expiresAt = (item["expires_at"] as? AttributeValue.N)?.value?.toLongOrNull() ?: 0L
+    if (!active || expiresAt <= now) {
+        return GateClient.Result.Closed
+    }
+
+    return GateClient.Result.Open(
+        mode = (item["mode"] as? AttributeValue.S)?.value ?: "",
+        startedAt = (item["started_at"] as? AttributeValue.N)?.value?.toLongOrNull() ?: 0L,
+        expiresAt = expiresAt,
+        note = (item["note"] as? AttributeValue.S)?.value ?: "",
+    )
 }

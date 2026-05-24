@@ -142,43 +142,39 @@ def status(host: Host):
     return client(host).status()
 
 
-def register_host(host: Host) -> None:
+def register_host(host: Host, *, skip_biometric: bool = True) -> None:
     payload = json.dumps(host.payload(), separators=(",", ":"))
     encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     adb(["shell", "am", "force-stop", PKG])
-    adb([
+    cmd = [
         "shell",
         "am",
         "start",
         "-n",
         ACTIVITY,
-        "--ez",
-        "skip_biometric",
-        "true",
-        "--es",
-        "pairing_json_b64",
-        encoded,
-    ])
+    ]
+    if skip_biometric:
+        cmd.extend(["--ez", "skip_biometric", "true"])
+    cmd.extend(["--es", "pairing_json_b64", encoded])
+    adb(cmd)
     time.sleep(1)
 
 
-def register_hosts(*hosts: Host) -> None:
+def register_hosts(*hosts: Host, skip_biometric: bool = True) -> None:
     payloads = [host.payload() for host in hosts]
     encoded = base64.b64encode(json.dumps(payloads, separators=(",", ":")).encode("utf-8")).decode("ascii")
     adb(["shell", "am", "force-stop", PKG])
-    adb([
+    cmd = [
         "shell",
         "am",
         "start",
         "-n",
         ACTIVITY,
-        "--ez",
-        "skip_biometric",
-        "true",
-        "--es",
-        "pairing_jsons_b64",
-        encoded,
-    ])
+    ]
+    if skip_biometric:
+        cmd.extend(["--ez", "skip_biometric", "true"])
+    cmd.extend(["--es", "pairing_jsons_b64", encoded])
+    adb(cmd)
     time.sleep(1)
 
 
@@ -300,6 +296,17 @@ def wait_for_gate(host: Host, *, active: bool, timeout: float = 25.0) -> None:
     raise AssertionError(f"{host.name} gate did not become {state}")
 
 
+def assert_biometric_required_fails_closed(host: Host) -> None:
+    adb(["shell", "pm", "clear", PKG])
+    stop_gate(host)
+    register_host(host, skip_biometric=False)
+    assert_ui_contains("Gate: CLOSED")
+    tap_text("Start (1h)")
+    assert_ui_contains("ERROR: NoBiometric", "No biometric enrolled")
+    wait_for_gate(host, active=False)
+    print("\nbiometric preflight: paired-mode Start failed closed when no biometric was enrolled.")
+
+
 def assert_cli_identity(container: str) -> str:
     result = run_completed(["docker", "exec", container, "aws", "sts", "get-caller-identity"])
     if result.returncode != 0:
@@ -347,6 +354,9 @@ def main() -> None:
         if not args.skip_android_build:
             build_and_install_app()
 
+        assert_biometric_required_fails_closed(host_a)
+
+        adb(["shell", "pm", "clear", PKG])
         register_hosts(host_a, host_b)
         assert_ui_contains("Use server-a", "Selected: server-b")
 

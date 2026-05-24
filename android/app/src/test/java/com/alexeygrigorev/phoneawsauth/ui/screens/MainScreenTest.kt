@@ -54,4 +54,14 @@ class MainScreenTest {
         val open = GateClient.Result.Open(mode = "sandbox", startedAt = 100, expiresAt = 200, note = "")
         assertEquals(open, effectiveResult(open, nowSec = 199))
     }
+
+    @Test
+    fun durationIndexUsesSavedOptionWhenValid() {
+        assertEquals(2, durationIndexFor(listOf(15, 60, 240, 480), savedMinutes = 240))
+    }
+
+    @Test
+    fun durationIndexFallsBackToOneHourWhenSavedOptionIsInvalid() {
+        assertEquals(1, durationIndexFor(listOf(15, 60, 240, 480), savedMinutes = 999))
+    }
 }

@@ -142,6 +142,7 @@ private fun GateControl(
     onSelectHost: (PairedConfig) -> Unit,
     onPair: () -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember(client) { mutableStateOf<UiState>(UiState.Loading) }
 
@@ -167,7 +168,10 @@ private fun GateControl(
 
     // Duration picker. Values map to start(durationMinutes).
     val durationOptions = listOf(15, 60, 240, 480)
-    var durationIdx by remember { mutableIntStateOf(1) }
+    val uiPrefs = remember(context) { context.getSharedPreferences("phone-aws-ui", 0) }
+    var durationIdx by remember {
+        mutableIntStateOf(durationIndexFor(durationOptions, uiPrefs.getInt(KEY_DEFAULT_DURATION_MINUTES, 60)))
+    }
     val durationMinutes = durationOptions[durationIdx]
     val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
 
@@ -224,7 +228,10 @@ private fun GateControl(
             durationOptions.forEachIndexed { i, mins ->
                 SegmentedButton(
                     shape = SegmentedButtonDefaults.itemShape(i, durationOptions.size),
-                    onClick = { durationIdx = i },
+                    onClick = {
+                        durationIdx = i
+                        uiPrefs.edit().putInt(KEY_DEFAULT_DURATION_MINUTES, mins).apply()
+                    },
                     selected = i == durationIdx,
                 ) {
                     Text(if (mins < 60) "${mins}m" else "${mins / 60}h")
@@ -245,7 +252,7 @@ private fun GateControl(
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = gateActionsEnabled,
-            onClick = { runStop(scope, gateOp, client) { state = it } },
+            onClick = { runStop(scope, client) { state = it } },
         ) { Text("Stop") }
 
         Spacer(Modifier.height(8.dp))
@@ -343,17 +350,14 @@ private fun runStart(
 
 private fun runStop(
     scope: CoroutineScope,
-    gateOp: suspend (String, suspend () -> GateClient.Result) -> GateClient.Result,
     client: GateClient,
     onState: (UiState) -> Unit,
 ) {
     onState(UiState.Busy(null))
     scope.launch {
-        val r = gateOp("Close AWS gate") {
-            withContext(Dispatchers.IO) {
-                client.stop()
-                client.status()
-            }
+        val r = withContext(Dispatchers.IO) {
+            client.stop()
+            client.status()
         }
         onState(UiState.Idle(r))
     }
@@ -378,3 +382,10 @@ internal fun effectiveResult(raw: GateClient.Result?, nowSec: Long): GateClient.
         raw
     }
 }
+
+internal fun durationIndexFor(options: List<Int>, savedMinutes: Int): Int {
+    val exact = options.indexOf(savedMinutes)
+    return if (exact >= 0) exact else options.indexOf(60).takeIf { it >= 0 } ?: 0
+}
+
+private const val KEY_DEFAULT_DURATION_MINUTES = "default_duration_minutes"
