@@ -1,5 +1,8 @@
 package com.alexeygrigorev.phoneawsauth.ui.screens
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -38,6 +41,8 @@ import com.alexeygrigorev.phoneawsauth.net.GateClient
 import com.alexeygrigorev.phoneawsauth.net.LocalDev
 import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
+import com.alexeygrigorev.phoneawsauth.updates.ReleaseChecker
+import com.alexeygrigorev.phoneawsauth.updates.ReleaseInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -58,6 +63,11 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
     val context = LocalContext.current
     val settings = remember { PairedSettings(context) }
     val activity = remember(context) { context.findFragmentActivity() }
+    var updateInfo by remember { mutableStateOf<ReleaseInfo?>(null) }
+
+    LaunchedEffect(Unit) {
+        updateInfo = ReleaseChecker().check(currentVersionName(context))
+    }
 
     // remember(pairVersion) re-reads settings after the Pair screen pops.
     var paired by remember(pairVersion) { mutableStateOf(settings.load()) }
@@ -74,6 +84,7 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
         NotPairedScreen(
             onPair = onPair,
             onUseDevStack = { devOverride = true },
+            updateInfo = updateInfo,
         )
         return
     }
@@ -102,11 +113,17 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
             paired = host
         },
         onPair = onPair,
+        updateInfo = updateInfo,
     )
 }
 
 @Composable
-private fun NotPairedScreen(onPair: () -> Unit, onUseDevStack: () -> Unit) {
+private fun NotPairedScreen(
+    onPair: () -> Unit,
+    onUseDevStack: () -> Unit,
+    updateInfo: ReleaseInfo?,
+) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -115,6 +132,7 @@ private fun NotPairedScreen(onPair: () -> Unit, onUseDevStack: () -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text("AWS Gate", style = MaterialTheme.typography.titleLarge)
+        UpdateBanner(updateInfo = updateInfo, onUpdate = { openUrl(context, it.apkUrl) })
         Text(
             "Not paired. Pair this device with a deployed stack to control its gate.",
             style = MaterialTheme.typography.bodyMedium,
@@ -141,6 +159,7 @@ private fun GateControl(
     onUnpair: () -> Unit,
     onSelectHost: (PairedConfig) -> Unit,
     onPair: () -> Unit,
+    updateInfo: ReleaseInfo?,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -207,6 +226,7 @@ private fun GateControl(
             "AWS Gate",
             style = MaterialTheme.typography.titleLarge,
         )
+        UpdateBanner(updateInfo = updateInfo, onUpdate = { openUrl(context, it.apkUrl) })
         Text("[$modeLabel]", style = MaterialTheme.typography.bodySmall)
         if (hosts.size > 1) {
             hosts.forEach { host ->
@@ -269,6 +289,29 @@ private fun GateControl(
 
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onUnpair) {
             Text("Forget this host")
+        }
+    }
+}
+
+@Composable
+private fun UpdateBanner(updateInfo: ReleaseInfo?, onUpdate: (ReleaseInfo) -> Unit) {
+    updateInfo ?: return
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            "New version available: ${updateInfo.tagName}",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { onUpdate(updateInfo) },
+        ) {
+            Text("Download update")
         }
     }
 }
@@ -386,6 +429,18 @@ internal fun effectiveResult(raw: GateClient.Result?, nowSec: Long): GateClient.
 internal fun durationIndexFor(options: List<Int>, savedMinutes: Int): Int {
     val exact = options.indexOf(savedMinutes)
     return if (exact >= 0) exact else options.indexOf(60).takeIf { it >= 0 } ?: 0
+}
+
+private fun currentVersionName(context: Context): String {
+    return try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
+    } catch (_: Exception) {
+        "0.0.0"
+    }
+}
+
+private fun openUrl(context: Context, url: String) {
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
 }
 
 private const val KEY_DEFAULT_DURATION_MINUTES = "default_duration_minutes"

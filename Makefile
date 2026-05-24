@@ -1,6 +1,7 @@
 SHELL := /usr/bin/env bash
 
-COMPOSE := docker compose -f docker/docker-compose.yml
+COMPOSE_PROJECT ?= phone-aws-auth-e2e
+COMPOSE := docker compose -p $(COMPOSE_PROJECT) -f docker/docker-compose.yml
 
 # Local-dev defaults — match what's hardcoded in docker/docker-compose.yml.
 LOCAL_ROW_KEY := 4b3e9fadaac93f5d99f34f024bdfdcd8921b80d56b554d930d93f32471b534b6

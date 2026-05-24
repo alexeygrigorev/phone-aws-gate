@@ -35,7 +35,8 @@ from tools.phone_client import GateClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPOSE = ["docker", "compose", "-f", "docker/docker-compose.yml"]
+COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "phone-aws-auth-e2e")
+COMPOSE = ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", "docker/docker-compose.yml"]
 PKG = "com.alexeygrigorev.phoneawsauth"
 ACTIVITY = f"{PKG}/.MainActivity"
 REGION = "eu-west-1"
@@ -105,6 +106,21 @@ def wait_for_adb() -> None:
     lines = [line for line in out.splitlines() if line.endswith("\tdevice")]
     if not lines:
         raise SystemExit("No active adb device/emulator found")
+
+
+def wait_for_emulator_host_port(port: int, *, timeout: float = 45.0) -> None:
+    deadline = time.time() + timeout
+    last = ""
+    while time.time() < deadline:
+        last = adb(
+            ["shell", f"toybox nc -z -w 2 10.0.2.2 {port}; echo nc_rc=$?"],
+            capture=True,
+            check=False,
+        )
+        if "nc_rc=0" in last:
+            return
+        time.sleep(1)
+    raise AssertionError(f"Emulator could not reach host port {port} via 10.0.2.2\n{last}")
 
 
 def build_and_install_app() -> None:
@@ -351,6 +367,7 @@ def main() -> None:
             stop_gate(host)
 
         wait_for_adb()
+        wait_for_emulator_host_port(18000)
         if not args.skip_android_build:
             build_and_install_app()
 
