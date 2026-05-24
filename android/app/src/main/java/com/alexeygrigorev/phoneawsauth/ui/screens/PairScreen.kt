@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.alexeygrigorev.phoneawsauth.PortraitCaptureActivity
 import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
 import com.google.zxing.BinaryBitmap
@@ -99,6 +100,7 @@ fun PairScreen(onDone: () -> Unit) {
                 scanLauncher.launch(
                     ScanOptions()
                         .setBeepEnabled(false)
+                        .setCaptureActivity(PortraitCaptureActivity::class.java)
                         .setOrientationLocked(true)
                         .setPrompt("Point the camera at the host QR")
                         .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
