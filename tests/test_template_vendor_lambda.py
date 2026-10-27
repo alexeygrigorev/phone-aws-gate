@@ -156,3 +156,34 @@ def test_inline_lambda_rejects_bad_mode():
     resp = handler(_event(), _ctx())
 
     assert resp["statusCode"] == 500
+
+
+def test_inline_checked_tags_and_unchanged_response():
+    import json
+    item = _open_item()
+    old, _, _ = _load_handler(item.copy())
+    item.update(main_access=True, grant_id="grant-123")
+    checked, _, sts = _load_handler(item)
+    assert checked(_event(), _ctx()) == old(_event(), _ctx())
+    assert sts.assume_role_kwargs["Tags"] == [
+        {"Key": "aws-gate-main", "Value": "true"},
+        {"Key": "aws-gate-grant", "Value": "grant-123"},
+    ]
+
+
+def test_inline_false_is_identical_to_legacy():
+    item = _open_item()
+    legacy, _, old_sts = _load_handler(item.copy())
+    item["main_access"] = False
+    unchecked, _, new_sts = _load_handler(item)
+    assert unchecked(_event(), _ctx()) == legacy(_event(), _ctx())
+    assert new_sts.assume_role_kwargs == old_sts.assume_role_kwargs
+    assert "Tags" not in new_sts.assume_role_kwargs
+
+
+def test_inline_stop_and_expiry_never_call_sts():
+    for fields in ({"active": False}, {"expires_at": 1}):
+        item = dict(_open_item(), main_access=True, grant_id="grant-123", **fields)
+        handler, _, sts = _load_handler(item)
+        assert handler(_event(), _ctx())["statusCode"] == 403
+        assert sts.assume_role_kwargs is None

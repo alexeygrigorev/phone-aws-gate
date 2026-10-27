@@ -68,11 +68,17 @@ def handler(event: dict, context) -> dict:
     else:
         role_arn = config.role_arn_for_mode(row.mode)
         request_id = getattr(context, "aws_request_id", "local")
-        resp = _sts().assume_role(
+        assume_args = dict(
             RoleArn=role_arn,
             RoleSessionName=f"phone-{row.mode}-{request_id[:8]}",
             DurationSeconds=config.STS_SESSION_DURATION_SECONDS,
         )
+        if row.main_access:
+            assume_args["Tags"] = [
+                {"Key": "aws-gate-main", "Value": "true"},
+                {"Key": "aws-gate-grant", "Value": row.grant_id or f"{row.token_hash}-{row.started_at}"},
+            ]
+        resp = _sts().assume_role(**assume_args)
         c = resp["Credentials"]
         creds = {
             "AccessKeyId": c["AccessKeyId"],
@@ -81,6 +87,8 @@ def handler(event: dict, context) -> dict:
             "Expiration": c["Expiration"].isoformat(),
         }
 
+    log.info("vend grant_id=%s main_access=%s mode=%s",
+             row.grant_id or f"{row.token_hash}-{row.started_at}", row.main_access, row.mode)
     return _response(200, creds)
 
 

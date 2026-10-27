@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -26,6 +27,8 @@ class GateState:
     started_at: int = 0
     expires_at: int = 0
     note: str = ""
+    main_access: bool = False
+    grant_id: str = ""
 
 
 class GateClient:
@@ -65,7 +68,7 @@ class GateClient:
             endpoint_url=os.environ.get("DDB_ENDPOINT_URL") or None,
         )
 
-    def start(self, mode: str, duration_minutes: int = 60, note: str = "") -> GateState:
+    def start(self, mode: str, duration_minutes: int = 60, note: str = "", main_access: bool = False) -> GateState:
         if mode != "sandbox":
             raise ValueError(f"mode must be 'sandbox', got {mode!r}")
         if duration_minutes <= 0 or duration_minutes > 24 * 60:
@@ -73,6 +76,7 @@ class GateClient:
 
         now = int(time.time())
         expires_at = now + duration_minutes * 60
+        grant_id = uuid.uuid4().hex
         self._table.put_item(Item={
             "token_hash": self.row_key,
             "active": True,
@@ -80,9 +84,12 @@ class GateClient:
             "started_at": now,
             "expires_at": expires_at,
             "note": note[:200],
+            "main_access": main_access,
+            "grant_id": grant_id,
         })
         return GateState(
             active=True, mode=mode, started_at=now, expires_at=expires_at, note=note,
+            main_access=main_access, grant_id=grant_id,
         )
 
     def stop(self) -> None:
@@ -108,4 +115,6 @@ class GateClient:
             started_at=int(item.get("started_at", 0)),
             expires_at=int(item.get("expires_at", 0)),
             note=str(item.get("note", "")),
+            main_access=item.get("main_access") is True,
+            grant_id=str(item.get("grant_id", "")),
         )

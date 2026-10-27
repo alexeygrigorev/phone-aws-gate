@@ -143,6 +143,14 @@ def update_aws_config(path: Path, *, region: str, credential_command: str) -> Pa
     config["default"]["region"] = region
     config["default"]["credential_process"] = credential_command
 
+    config["profile main"] = {
+        "region": region,
+        "source_profile": "default",
+        "role_arn": "arn:aws:iam::387546586013:role/aws-gate-main-access",
+        "duration_seconds": "900",
+        "role_session_name": "aws-gate-main",
+    }
+
     with path.open("w", encoding="utf-8") as f:
         config.write(f)
     path.chmod(0o600)

@@ -1,5 +1,6 @@
 package com.alexeygrigorev.phoneawsauth.net
 
+import java.util.UUID
 import aws.sdk.kotlin.runtime.auth.credentials.StaticCredentialsProvider
 import aws.sdk.kotlin.services.dynamodb.DynamoDbClient
 import aws.sdk.kotlin.services.dynamodb.model.AttributeValue
@@ -37,6 +38,8 @@ class GateClient(
             val startedAt: Long,
             val expiresAt: Long,
             val note: String,
+            val mainAccess: Boolean = false,
+            val grantId: String = "",
         ) : Result()
         data object Closed : Result()
         data class Error(val type: String, val message: String) : Result()
@@ -51,7 +54,7 @@ class GateClient(
         }
     }
 
-    suspend fun start(mode: String, durationMinutes: Int, note: String = ""): Result {
+    suspend fun start(mode: String, durationMinutes: Int, note: String = "", mainAccess: Boolean = false): Result {
         require(mode == "sandbox") {
             "mode must be 'sandbox', got $mode"
         }
@@ -61,6 +64,7 @@ class GateClient(
 
         val now = System.currentTimeMillis() / 1000
         val expiresAt = now + durationMinutes * 60L
+        val grantId = UUID.randomUUID().toString()
 
         return runCatching {
             val req = PutItemRequest {
@@ -72,10 +76,12 @@ class GateClient(
                     "started_at" to AttributeValue.N(now.toString()),
                     "expires_at" to AttributeValue.N(expiresAt.toString()),
                     "note" to AttributeValue.S(note.take(200)),
+                    "main_access" to AttributeValue.Bool(mainAccess),
+                    "grant_id" to AttributeValue.S(grantId),
                 )
             }
             client().use { it.putItem(req) }
-            Result.Open(mode, now, expiresAt, note) as Result
+            Result.Open(mode, now, expiresAt, note, mainAccess, grantId) as Result
         }.getOrElse { Result.Error(it::class.simpleName ?: "Error", it.message ?: "") }
     }
 
@@ -115,5 +121,7 @@ internal fun resultFromItem(item: Map<String, AttributeValue>?, now: Long): Gate
         startedAt = (item["started_at"] as? AttributeValue.N)?.value?.toLongOrNull() ?: 0L,
         expiresAt = expiresAt,
         note = (item["note"] as? AttributeValue.S)?.value ?: "",
+        mainAccess = (item["main_access"] as? AttributeValue.Bool)?.value ?: false,
+        grantId = (item["grant_id"] as? AttributeValue.S)?.value ?: "",
     )
 }

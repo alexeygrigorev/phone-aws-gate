@@ -135,6 +135,13 @@ jobs:
           profile: pixel_6
           script: make e2e
 
+      - name: Upload checkbox screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-access-checkbox
+          path: artifacts/main-access-checkbox.png
+
   release:
     name: GitHub Release
     runs-on: ubuntu-latest

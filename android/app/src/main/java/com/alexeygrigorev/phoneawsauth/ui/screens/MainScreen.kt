@@ -4,6 +4,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -127,6 +131,7 @@ private fun NotPairedScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -163,6 +168,7 @@ private fun GateControl(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var mainAccess by remember(selectedRowKey) { mutableStateOf(false) }
     var state by remember(client) { mutableStateOf<UiState>(UiState.Loading) }
 
     LaunchedEffect(client) {
@@ -218,6 +224,7 @@ private fun GateControl(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -259,11 +266,16 @@ private fun GateControl(
             }
         }
 
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = mainAccess, onCheckedChange = { mainAccess = it }, enabled = !busy)
+            Text("Also give access to MAIN")
+        }
+
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = gateActionsEnabled,
             onClick = {
-                runStart(scope, gateOp, client, "sandbox", durationMinutes, isExtend = isOpen) {
+                runStart(scope, gateOp, client, "sandbox", durationMinutes, mainAccess = mainAccess, isExtend = isOpen) {
                     state = it
                 }
             },
@@ -345,7 +357,7 @@ private fun OpenStatus(r: GateClient.Result.Open) {
     }
     val remaining = (r.expiresAt - now).coerceAtLeast(0L)
     Text(
-        text = "Gate: OPEN (${r.mode})\n${formatRemaining(remaining)} remaining · until ${formatEpoch(r.expiresAt)}",
+        text = "Gate: OPEN (${r.mode}) · MAIN: ${if (r.mainAccess) "yes" else "no"}\n${formatRemaining(remaining)} remaining · until ${formatEpoch(r.expiresAt)}",
         textAlign = TextAlign.Center,
         style = MaterialTheme.typography.bodyLarge,
     )
@@ -378,6 +390,7 @@ private fun runStart(
     client: GateClient,
     mode: String,
     durationMinutes: Int,
+    mainAccess: Boolean = false,
     isExtend: Boolean = false,
     onState: (UiState) -> Unit,
 ) {
@@ -385,7 +398,7 @@ private fun runStart(
     scope.launch {
         val title = if (isExtend) "Extend AWS gate ($mode)" else "Open AWS gate ($mode)"
         val r = gateOp(title) {
-            withContext(Dispatchers.IO) { client.start(mode, durationMinutes) }
+            withContext(Dispatchers.IO) { client.start(mode, durationMinutes, mainAccess = mainAccess) }
         }
         onState(UiState.Idle(r))
     }

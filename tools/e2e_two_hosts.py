@@ -35,7 +35,9 @@ from tools.phone_client import GateClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", "phone-aws-auth-e2e")
+SESSION_ID = os.environ.get("APLEXER_SESSION_ID") or os.environ.get("GITHUB_RUN_ID") or "gate-main-f3cba4d0"
+os.environ.setdefault("AGENT_SESSION_ID", SESSION_ID)
+COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", f"phone-aws-auth-e2e-{SESSION_ID}")
 COMPOSE = ["docker", "compose", "-p", COMPOSE_PROJECT, "-f", "docker/docker-compose.yml"]
 PKG = "com.alexeygrigorev.phoneawsauth"
 ACTIVITY = f"{PKG}/.MainActivity"
@@ -249,12 +251,15 @@ def docker_image() -> str:
 
 
 def start_server_container(image: str, vendor_container: str, host: Host) -> str:
-    name = f"aws-gate-e2e-{host.name}"
-    run(["docker", "rm", "-f", name], check=False)
-    run([
+    name = f"aws-gate-e2e-{host.name}-{SESSION_ID}"
+    try:
+        run([
         "docker",
         "run",
         "-d",
+        "--rm",
+        "--label",
+        f"agent.session={SESSION_ID}",
         "--name",
         name,
         "--network",
@@ -276,7 +281,10 @@ def start_server_container(image: str, vendor_container: str, host: Host) -> str
         "-e",
         "TRY_STS=1",
         image,
-    ])
+        ])
+    except BaseException:
+        remove_servers(name)
+        raise
     return name
 
 
@@ -375,7 +383,14 @@ def main() -> None:
 
         adb(["shell", "pm", "clear", PKG])
         register_hosts(host_a, host_b)
-        assert_ui_contains("Use server-a", "Selected: server-b")
+        assert_ui_contains("Use server-a", "Selected: server-b", "Also give access to MAIN")
+        ui = ET.fromstring(dump_ui())
+        checkboxes = [n for n in ui.iter("node") if n.attrib.get("class") == "android.widget.CheckBox"]
+        assert checkboxes and all(n.attrib.get("checked") == "false" for n in checkboxes)
+        screenshot = ROOT / "artifacts" / "main-access-checkbox.png"
+        screenshot.parent.mkdir(exist_ok=True)
+        with screenshot.open("wb") as image:
+            subprocess.run([os.environ.get("ADB", "adb"), "exec-out", "screencap", "-p"], stdout=image, check=True)
 
         image = docker_image()
         server_a = start_server_container(image, vendor_id, host_a)

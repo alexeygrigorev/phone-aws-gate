@@ -60,4 +60,19 @@ class GateClientTest {
         "expires_at" to AttributeValue.N(expiresAt.toString()),
         "note" to AttributeValue.S("hello"),
     )
+    @org.junit.Test
+    fun mainAccessDefaultsFalseAndReadsChecked() {
+        val item = mapOf(
+            "active" to aws.sdk.kotlin.services.dynamodb.model.AttributeValue.Bool(true),
+            "expires_at" to aws.sdk.kotlin.services.dynamodb.model.AttributeValue.N("4000000000"),
+        )
+        org.junit.Assert.assertFalse((resultFromItem(item, 100) as GateClient.Result.Open).mainAccess)
+        val checked = item + mapOf(
+            "main_access" to aws.sdk.kotlin.services.dynamodb.model.AttributeValue.Bool(true),
+            "grant_id" to aws.sdk.kotlin.services.dynamodb.model.AttributeValue.S("grant-123"),
+        )
+        val result = resultFromItem(checked, 100) as GateClient.Result.Open
+        org.junit.Assert.assertTrue(result.mainAccess)
+        org.junit.Assert.assertEquals("grant-123", result.grantId)
+    }
 }

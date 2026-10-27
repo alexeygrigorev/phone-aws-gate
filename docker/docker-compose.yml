@@ -12,6 +12,8 @@
 
 services:
   dynamodb-local:
+    labels:
+      agent.session: "${AGENT_SESSION_ID:-gate-main-f3cba4d0}"
     image: amazon/dynamodb-local:latest
     command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
     ports:
@@ -19,6 +21,8 @@ services:
       - "18000:8000"
 
   bootstrap:
+    labels:
+      agent.session: "${AGENT_SESSION_ID:-gate-main-f3cba4d0}"
     build:
       context: ..
       dockerfile: docker/Dockerfile.bootstrap
@@ -32,6 +36,8 @@ services:
     restart: "no"
 
   vendor:
+    labels:
+      agent.session: "${AGENT_SESSION_ID:-gate-main-f3cba4d0}"
     build:
       context: ..
       dockerfile: docker/Dockerfile.shim
@@ -57,6 +63,8 @@ services:
       - "8002:8002"
 
   fake-sts:
+    labels:
+      agent.session: "${AGENT_SESSION_ID:-gate-main-f3cba4d0}"
     build:
       context: ..
       dockerfile: docker/Dockerfile.shim
@@ -67,6 +75,8 @@ services:
       - "4592:4592"
 
   test-server:
+    labels:
+      agent.session: "${AGENT_SESSION_ID:-gate-main-f3cba4d0}"
     build:
       context: ./test-server
     # boto3 only allows http:// at loopback or the ECS metadata addresses.
