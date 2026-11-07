@@ -22,7 +22,8 @@ class FakeTable:
         self.item = item
         self.key = None
 
-    def get_item(self, *, Key: dict) -> dict:
+    def get_item(self, *, Key: dict, ConsistentRead: bool) -> dict:
+        assert ConsistentRead
         self.key = Key
         return {"Item": self.item} if self.item else {}
 
@@ -62,7 +63,7 @@ class FakeBoto3(ModuleType):
         assert service == "dynamodb"
         return FakeDynamoResource(self.table)
 
-    def client(self, service: str):
+    def client(self, service: str, **kwargs):
         assert service == "sts"
         return self.sts
 
@@ -187,3 +188,22 @@ def test_inline_stop_and_expiry_never_call_sts():
         handler, _, sts = _load_handler(item)
         assert handler(_event(), _ctx())["statusCode"] == 403
         assert sts.assume_role_kwargs is None
+
+
+def test_main_only_vends_main_without_returning_sandbox_credentials():
+    item = _open_item(mode="main")
+    item.update(main_access=True, grant_id="main-only")
+    handler, _, sts = _load_handler(item)
+    with patch.object(sts, "assume_role", wraps=sts.assume_role) as assume:
+        assert handler(_event(), _ctx())["statusCode"] == 403
+        assume.assert_not_called()
+        assert handler(dict(_event(), rawPath="/main"), _ctx())["statusCode"] == 200
+        assert assume.call_count == 2
+        assert assume.call_args_list[0].kwargs["Tags"][0]["Value"] == "true"
+        assert assume.call_args_list[1].kwargs["RoleArn"].endswith(":role/aws-gate-main-access")
+
+
+def test_sandbox_only_refuses_main():
+    handler, _, sts = _load_handler(_open_item())
+    assert handler(dict(_event(), rawPath="/main"), _ctx())["statusCode"] == 403
+    assert sts.assume_role_kwargs is None

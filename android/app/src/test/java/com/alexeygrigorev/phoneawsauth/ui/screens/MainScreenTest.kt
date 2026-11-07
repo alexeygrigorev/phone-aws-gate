@@ -2,57 +2,35 @@ package com.alexeygrigorev.phoneawsauth.ui.screens
 
 import com.alexeygrigorev.phoneawsauth.net.GateClient
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MainScreenTest {
     @Test
-    fun gateActionsAreDisabledWhileBusy() {
-        assertFalse(canRunGateAction(GateClient.Result.Closed, busy = true))
+    fun mainOnlyGrantDoesNotShowSandboxAsOpen() {
+        val open = GateClient.Result.Open("main", 100, 200, "", mainAccess = true)
+        assertEquals(AccessState.Closed, awsAccessState(open, CloudAccount.Sandbox, now = 199))
+        assertEquals(AccessState.Open(200), awsAccessState(open, CloudAccount.Main, now = 199))
     }
 
     @Test
-    fun gateActionsAreDisabledBeforeStatusLoads() {
-        assertFalse(canRunGateAction(result = null, busy = false))
+    fun sandboxGrantWithoutMainKeepsMainClosed() {
+        val open = GateClient.Result.Open("sandbox", 100, 200, "")
+        assertEquals(AccessState.Open(200), awsAccessState(open, CloudAccount.Sandbox, now = 199))
+        assertEquals(AccessState.Closed, awsAccessState(open, CloudAccount.Main, now = 199))
     }
 
     @Test
-    fun gateActionsAreDisabledAfterStatusError() {
-        assertFalse(canRunGateAction(GateClient.Result.Error("AccessDenied", "re-pair"), busy = false))
+    fun expiredGrantClosesBothAccounts() {
+        val open = GateClient.Result.Open("sandbox", 100, 200, "", mainAccess = true)
+        assertEquals(AccessState.Closed, awsAccessState(open, CloudAccount.Sandbox, now = 200))
+        assertEquals(AccessState.Closed, awsAccessState(open, CloudAccount.Main, now = 200))
     }
 
     @Test
-    fun gateActionsAreEnabledAfterSuccessfulClosedStatus() {
-        assertTrue(canRunGateAction(GateClient.Result.Closed, busy = false))
-    }
-
-    @Test
-    fun gateActionsAreEnabledAfterSuccessfulOpenStatus() {
-        assertTrue(
-            canRunGateAction(
-                GateClient.Result.Open(
-                    mode = "sandbox",
-                    startedAt = 100,
-                    expiresAt = 200,
-                    note = "",
-                ),
-                busy = false,
-            ),
-        )
-    }
-
-    @Test
-    fun expiredOpenIsTreatedAsClosed() {
-        val open = GateClient.Result.Open(mode = "sandbox", startedAt = 100, expiresAt = 200, note = "")
-        assertEquals(GateClient.Result.Closed, effectiveResult(open, nowSec = 200))
-        assertEquals(GateClient.Result.Closed, effectiveResult(open, nowSec = 201))
-    }
-
-    @Test
-    fun unexpiredOpenIsPreserved() {
-        val open = GateClient.Result.Open(mode = "sandbox", startedAt = 100, expiresAt = 200, note = "")
-        assertEquals(open, effectiveResult(open, nowSec = 199))
+    fun failedStatusDoesNotPretendAccessIsClosed() {
+        val error = GateClient.Result.Error("AccessDenied", "")
+        assertEquals(AccessState.Unavailable, awsAccessState(error, CloudAccount.Sandbox, now = 200))
+        assertEquals(AccessState.Unavailable, awsAccessState(error, CloudAccount.Main, now = 200))
     }
 
     @Test

@@ -145,10 +145,7 @@ def update_aws_config(path: Path, *, region: str, credential_command: str) -> Pa
 
     config["profile main"] = {
         "region": region,
-        "source_profile": "default",
-        "role_arn": "arn:aws:iam::387546586013:role/aws-gate-main-access",
-        "duration_seconds": "900",
-        "role_session_name": "aws-gate-main",
+        "credential_process": f"{credential_command} --account main",
     }
 
     with path.open("w", encoding="utf-8") as f:
@@ -226,7 +223,7 @@ def pairing_payload(args: argparse.Namespace) -> dict[str, str]:
 
     controller = controller_config(args)
     name = args.name or socket.gethostname()
-    return {
+    payload = {
         "name": name,
         "region": controller.get("region", args.region),
         "table": controller.get("table", "phone-aws-gate"),
@@ -234,6 +231,11 @@ def pairing_payload(args: argparse.Namespace) -> dict[str, str]:
         "accessKeyId": controller["accessKeyId"],
         "secretAccessKey": controller["secretAccessKey"],
     }
+    gcp_pairing = getattr(args, "gcp_pairing", None)
+    if gcp_pairing:
+        gcp = json.loads(Path(gcp_pairing).expanduser().read_text(encoding="utf-8"))
+        payload.update(gcpUrl=gcp["gcpUrl"], gcpControllerToken=gcp["gcpControllerToken"])
+    return payload
 
 
 def pair_qr(args: argparse.Namespace) -> int:
@@ -255,6 +257,8 @@ def credential_process(args: argparse.Namespace) -> int:
     url = values["AWS_CONTAINER_CREDENTIALS_FULL_URI"]
     token = values["AWS_CONTAINER_AUTHORIZATION_TOKEN"]
 
+    if args.account == "main":
+        url = f"{url.rstrip('/')}/main"
     request = urllib.request.Request(url, headers={"Authorization": token})
     try:
         with urllib.request.urlopen(request, timeout=args.timeout) as response:
@@ -298,6 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     credential_parser = sub.add_parser("credential-process")
     credential_parser.add_argument("--env", required=True)
+    credential_parser.add_argument("--account", choices=("sandbox", "main"), default="sandbox")
     credential_parser.add_argument("--timeout", type=float, default=10.0)
     credential_parser.set_defaults(func=credential_process)
 
@@ -310,6 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     pair_parser.add_argument("--stack-name", default=os.environ.get("STACK_NAME", "phone-aws-auth"))
     pair_parser.add_argument("--controller-file", default=".runtime/controller.json")
     pair_parser.add_argument("--env-file", default=os.environ.get("AWS_GATE_ENV_FILE", "~/.config/aws-gate/env"))
+    pair_parser.add_argument("--gcp-pairing", help="Private pair.json from provision_gcp_gate.py")
     pair_parser.add_argument("--json", action="store_true")
     pair_parser.set_defaults(func=pair_qr)
 

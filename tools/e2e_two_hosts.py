@@ -324,9 +324,9 @@ def assert_biometric_required_fails_closed(host: Host) -> None:
     adb(["shell", "pm", "clear", PKG])
     stop_gate(host)
     register_host(host, skip_biometric=False)
-    assert_ui_contains("Gate: CLOSED")
-    tap_text("Start (1h)")
-    assert_ui_contains("ERROR: NoBiometric", "No biometric enrolled")
+    assert_ui_contains("Manage server-a", "Closed")
+    tap_text("Apply (1h)")
+    assert_ui_contains("No biometric enrolled")
     wait_for_gate(host, active=False)
     print("\nbiometric preflight: paired-mode Start failed closed when no biometric was enrolled.")
 
@@ -383,10 +383,11 @@ def main() -> None:
 
         adb(["shell", "pm", "clear", PKG])
         register_hosts(host_a, host_b)
-        assert_ui_contains("Use server-a", "Selected: server-b", "Also give access to MAIN")
+        assert_ui_contains("server-a", "Manage server-b", "Grant AWS Main", "Google Cloud")
         ui = ET.fromstring(dump_ui())
         checkboxes = [n for n in ui.iter("node") if n.attrib.get("class") == "android.widget.CheckBox"]
-        assert checkboxes and all(n.attrib.get("checked") == "false" for n in checkboxes)
+        main_choices = [node for node in checkboxes if node.attrib.get("text") == "Grant AWS Main"]
+        assert len(main_choices) == 1 and main_choices[0].attrib.get("checked") == "false"
         screenshot = ROOT / "artifacts" / "main-access-checkbox.png"
         screenshot.parent.mkdir(exist_ok=True)
         with screenshot.open("wb") as image:
@@ -396,9 +397,9 @@ def main() -> None:
         server_a = start_server_container(image, vendor_id, host_a)
         server_b = start_server_container(image, vendor_id, host_b)
 
-        tap_text("Use server-a")
-        assert_ui_contains("Selected: server-a", "Use server-b")
-        tap_text("Start (1h)")
+        tap_text("server-a")
+        assert_ui_contains("Manage server-a", "server-b")
+        tap_text("Apply (1h)")
         wait_for_gate(host_a, active=True)
         wait_for_gate(host_b, active=False)
 
@@ -413,11 +414,11 @@ def main() -> None:
 
         before_a = run(["docker", "logs", server_a], capture=True, check=False)
         before_b = run(["docker", "logs", server_b], capture=True, check=False)
-        tap_text("Stop")
+        tap_text("Stop all")
         wait_for_gate(host_a, active=False)
-        tap_text("Use server-b")
-        assert_ui_contains("Selected: server-b", "Use server-a")
-        tap_text("Start (1h)")
+        tap_text("server-b")
+        assert_ui_contains("Manage server-b", "server-a")
+        tap_text("Apply (1h)")
         wait_for_gate(host_b, active=True)
         wait_for_gate(host_a, active=False)
 

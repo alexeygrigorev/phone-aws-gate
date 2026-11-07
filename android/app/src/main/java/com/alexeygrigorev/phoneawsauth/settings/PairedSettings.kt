@@ -18,6 +18,7 @@ data class PairedConfig(
     val accessKeyId: String,
     val secretAccessKey: String,
     val ddbEndpoint: String? = null,
+    val gcp: GcpPairing? = null,
 ) {
     companion object {
         // Hardcoded names per the deploy contract; user-facing pairing payloads
@@ -65,6 +66,7 @@ class PairedSettings(context: Context) {
                     accessKeyId = obj.getString("accessKeyId"),
                     secretAccessKey = obj.getString("secretAccessKey"),
                     ddbEndpoint = obj.optString("ddbEndpoint").ifBlank { null },
+                    gcp = GcpPairing.fromJson(obj),
                 )
             }
         }
@@ -119,19 +121,8 @@ class PairedSettings(context: Context) {
 
     fun remove(rowKey: String) {
         val updated = hosts().filterNot { it.rowKey == rowKey }
-        val arr = JSONArray()
-        updated.forEach { host ->
-            arr.put(JSONObject()
-                .put("name", host.name)
-                .put("region", host.region)
-                .put("table", host.table)
-                .put("rowKey", host.rowKey)
-                .put("accessKeyId", host.accessKeyId)
-                .put("secretAccessKey", host.secretAccessKey)
-                .put("ddbEndpoint", host.ddbEndpoint))
-        }
         val edit = prefs.edit()
-            .putString(KEY_HOSTS, arr.toString())
+            .putString(KEY_HOSTS, serializeHosts(updated))
         val selected = updated.firstOrNull()?.rowKey
         if (selected == null) {
             edit.remove(KEY_SELECTED_ROW_KEY)
@@ -142,20 +133,22 @@ class PairedSettings(context: Context) {
             .commit()
     }
 
+    private fun serializeHosts(hosts: List<PairedConfig>): String = JSONArray(hosts.map { host ->
+        JSONObject()
+            .put("name", host.name)
+            .put("region", host.region)
+            .put("table", host.table)
+            .put("rowKey", host.rowKey)
+            .put("accessKeyId", host.accessKeyId)
+            .put("secretAccessKey", host.secretAccessKey)
+            .put("ddbEndpoint", host.ddbEndpoint)
+            .put("gcpUrl", host.gcp?.url)
+            .put("gcpControllerToken", host.gcp?.controllerToken)
+    }).toString()
+
     private fun writeHosts(hosts: List<PairedConfig>, selectedRowKey: String) {
-        val arr = JSONArray()
-        hosts.forEach { host ->
-            arr.put(JSONObject()
-                .put("name", host.name)
-                .put("region", host.region)
-                .put("table", host.table)
-                .put("rowKey", host.rowKey)
-                .put("accessKeyId", host.accessKeyId)
-                .put("secretAccessKey", host.secretAccessKey)
-                .put("ddbEndpoint", host.ddbEndpoint))
-        }
         prefs.edit()
-            .putString(KEY_HOSTS, arr.toString())
+            .putString(KEY_HOSTS, serializeHosts(hosts))
             .putString(KEY_SELECTED_ROW_KEY, selectedRowKey)
             .remove(KEY_NAME)
             .remove(KEY_REGION)

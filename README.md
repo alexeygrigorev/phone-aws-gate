@@ -1,6 +1,6 @@
 # AWS Gate
 
-AWS Gate lets you open temporary sandbox AWS access for one or more remote machines from an Android phone.
+AWS Gate lets you grant temporary access to AWS Sandbox, AWS Main and Google Cloud from an Android phone. Each computer has its own grants. See [Google Cloud access](docs/google-cloud-gate.md) for broker deployment and pairing.
 
 Each host gets its own random bearer token and its own DynamoDB gate row. The phone app registers hosts by scanning a QR code generated on that host, then lets you select which host to open or close. The remote machine never stores long-lived AWS keys; it only stores a Lambda URL and its local bearer token. The phone stores the controller IAM key in Android encrypted storage and writes the gate row directly.
 
@@ -378,9 +378,7 @@ phone-aws-auth-<tag>-debug.apk
 
 ## Optional MAIN administrator access
 
-The grant form is the Android Start screen in `alexeygrigorev/phone-aws-gate`
-(`MainScreen.kt` / `GateClient.kt`); there is no web grant form.
-“Also give access to MAIN” defaults to unchecked. The gate row and host status
+Select AWS Main in the Android access matrix to grant MAIN access. The app leaves MAIN unchecked by default. Selecting AWS Main on its own opens the `/main` credential endpoint while the sandbox endpoint refuses the grant. The gate row and host status
 include `main_access`; old rows without it are sandbox-only. Each grant has a
 `grant_id`. Each successful vend logs the grant ID and MAIN flag; checked
 vends also record `aws-gate-main=true` and `aws-gate-grant` STS session tags in
@@ -391,13 +389,12 @@ After installing with `tools/install_aws_gate.py install`, use:
 ```sh
 aws sts get-caller-identity                   # sandbox, unchanged default
 aws --profile main sts get-caller-identity    # MAIN, only for checked grants
-# Or, using freshly vended Gate sandbox credentials:
+# For a combined sandbox and MAIN grant, the legacy chain also works:
 aws sts assume-role --role-arn arn:aws:iam::387546586013:role/aws-gate-main-access \
   --role-session-name gate-main --duration-seconds 900
 ```
 
-The installer adds `[profile main]` with `source_profile = default`, the role
-above, and `duration_seconds = 900`; the default credential process is unchanged.
+The installer configures `[profile main]` to request credentials directly from the vendor's `/main` endpoint. Deploy the updated vendor before installing the new profile. The default credential process still uses the sandbox endpoint.
 Session tags come from the vendor, so the client needs no external ID or tag
 arguments. The Hub shared AWS config must carry the same `main` profile.
 

@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.alexeygrigorev.phoneawsauth.PortraitCaptureActivity
+import com.alexeygrigorev.phoneawsauth.settings.GcpPairing
 import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
 import com.google.zxing.BinaryBitmap
@@ -185,7 +186,7 @@ internal fun parse(payload: String): PairedConfig {
     val obj = try {
         JSONObject(payload.trim())
     } catch (e: Exception) {
-        throw IllegalArgumentException("Not valid JSON: ${e.message}")
+        throw IllegalArgumentException("Not valid JSON")
     }
 
     val rowKey = obj.optString("rowKey").ifBlank {
@@ -210,5 +211,6 @@ internal fun parse(payload: String): PairedConfig {
         accessKeyId = accessKeyId,
         secretAccessKey = secretAccessKey,
         ddbEndpoint = obj.optString("ddbEndpoint").ifBlank { null },
+        gcp = GcpPairing.fromJson(obj),
     )
 }

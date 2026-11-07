@@ -42,6 +42,9 @@ jobs:
       - name: pytest
         run: uv run pytest tests/ -v
 
+      - name: Google Cloud broker tests
+        run: uv run --no-project --with-requirements gcp_broker/requirements.txt --with pytest python -m pytest gcp_broker/test_main.py
+
       - name: cfn-lint
         run: |
           uv pip install --no-cache cfn-lint
