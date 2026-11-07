@@ -28,16 +28,20 @@ Omit `--row-key` if the provisioning machine is the paired host and its AWS Gate
 ./pair-qr.sh --name hostname --gcp-pairing .runtime/gcp/hostname/pair.json
 ```
 
-Set the project's name and point both credential consumers at the private file in the gated environment:
+Use the gate wrapper for Google Cloud CLI commands. It requests a fresh token for each invocation and passes it to gcloud in the child process environment.
 
 ```sh
-export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$HOME/.config/gcp-gate/credentials.json"
-export GOOGLE_APPLICATION_CREDENTIALS="$CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"
-export CLOUDSDK_CORE_PROJECT=dtcdev-click
-export GOOGLE_CLOUD_PROJECT=dtcdev-click
-gcloud compute instances list
+python tools/gcloud_gate.py --credentials "$HOME/.config/gcp-gate/credentials.json" \
+    --gcloud /path/to/google-cloud-sdk/bin/gcloud --project dtcdev-click -- compute instances list
 ```
 
-Use the corresponding environment variables in PowerShell. The ADC file uses the external-account authorized-user format supported by gcloud and Python google-auth. SDK support depends on the language and library version. Remove any higher-priority CLI credentials from the gated environment. A separate owner login on the same OS account remains independently usable.
+For Python client libraries, set the project's name and point Application Default Credentials at the same private file:
+
+```sh
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcp-gate/credentials.json"
+export GOOGLE_CLOUD_PROJECT=dtcdev-click
+```
+
+Use the corresponding environment variables in PowerShell. SDK support for the external-account authorized-user format depends on the language and library version. A separate owner login on the same OS account remains independently usable.
 
 Run a read-only command with the gate open, then start a fresh CLI process after Stop and verify that token refresh is denied.
