@@ -211,6 +211,7 @@ Resources:
                       "SecretAccessKey": c["SecretAccessKey"],
                       "Token": c["SessionToken"],
                       "Expiration": c["Expiration"].isoformat(),
+                      **({"Account": "main"} if main else {}),
                   }),
               }
       Tags:

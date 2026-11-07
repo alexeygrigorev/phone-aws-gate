@@ -196,7 +196,7 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
     }
     LaunchedEffect(hosts) { refresh() }
 
-    val debugSkipBiometric = BuildConfig.DEBUG &&
+    val debugSkipBiometric = BuildConfig.GATE_E2E &&
         context.getSharedPreferences("phone-aws-debug", 0).getBoolean("skip_biometric", false)
 
     fun apply(host: HostGate, accounts: Set<CloudAccount>, duration: Int) {
@@ -237,7 +237,7 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
         if (selected == null) {
             Text("Register a computer to see and manage its cloud access.")
             Button(onClick = onPair) { Text("Register computer") }
-            if (BuildConfig.DEBUG) {
+            if (BuildConfig.GATE_E2E) {
                 OutlinedButton(onClick = { devOverride = true }) { Text("Use local emulator") }
             }
         } else {

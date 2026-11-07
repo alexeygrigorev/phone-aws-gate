@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -160,7 +161,6 @@ def test_inline_lambda_rejects_bad_mode():
 
 
 def test_inline_checked_tags_and_unchanged_response():
-    import json
     item = _open_item()
     old, _, _ = _load_handler(item.copy())
     item.update(main_access=True, grant_id="grant-123")
@@ -197,7 +197,9 @@ def test_main_only_vends_main_without_returning_sandbox_credentials():
     with patch.object(sts, "assume_role", wraps=sts.assume_role) as assume:
         assert handler(_event(), _ctx())["statusCode"] == 403
         assume.assert_not_called()
-        assert handler(dict(_event(), rawPath="/main"), _ctx())["statusCode"] == 200
+        response = handler(dict(_event(), rawPath="/main"), _ctx())
+        assert response["statusCode"] == 200
+        assert json.loads(response["body"])["Account"] == "main"
         assert assume.call_count == 2
         assert assume.call_args_list[0].kwargs["Tags"][0]["Value"] == "true"
         assert assume.call_args_list[1].kwargs["RoleArn"].endswith(":role/aws-gate-main-access")

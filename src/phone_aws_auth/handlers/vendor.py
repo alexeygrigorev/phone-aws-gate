@@ -106,6 +106,9 @@ def handler(event: dict, context) -> dict:
             "Expiration": c["Expiration"].isoformat(),
         }
 
+    if main:
+        creds["Account"] = "main"
+
     log.info("vend grant_id=%s main_access=%s account=%s",
              row.grant_id or f"{row.token_hash}-{row.started_at}", row.main_access, "main" if main else row.mode)
     return _response(200, creds)

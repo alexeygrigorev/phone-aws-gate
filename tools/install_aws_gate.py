@@ -175,7 +175,8 @@ def install(args: argparse.Namespace) -> int:
     write_gate_env(gate_env, region=args.region, vendor_url=vendor_url, bearer=bearer)
 
     script = Path(__file__).resolve()
-    credential_command = f"python3 {shlex.quote(str(script))} credential-process --env {shlex.quote(str(gate_env))}"
+    command = [sys.executable, str(script), "credential-process", "--env", str(gate_env)]
+    credential_command = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
     backup = update_aws_config(aws_config, region=args.region, credential_command=credential_command)
 
     removed_bashrc = remove_bashrc_block(Path.home() / ".bashrc")
@@ -265,6 +266,10 @@ def credential_process(args: argparse.Namespace) -> int:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         print(f"AWS Gate is closed or denied: HTTP {e.code}", file=sys.stderr)
+        return 1
+
+    if args.account == "main" and payload.get("Account") != "main":
+        print("AWS Gate vendor did not return a MAIN session", file=sys.stderr)
         return 1
 
     print(
