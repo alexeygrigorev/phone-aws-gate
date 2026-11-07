@@ -28,7 +28,7 @@ import java.util.Base64
 class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (BuildConfig.DEBUG) {
+        if (BuildConfig.GATE_E2E) {
             if (intent.getBooleanExtra("skip_biometric", false)) {
                 getSharedPreferences("phone-aws-debug", MODE_PRIVATE)
                     .edit()

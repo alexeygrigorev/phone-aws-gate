@@ -84,7 +84,11 @@ def create_app(store=None, minter=None):
     @app.errorhandler(GoogleAPICallError)
     @app.errorhandler(RequestException)
     def unavailable(error):
-        app.logger.warning("Google Cloud Gate dependency failed: %s", type(error).__name__)
+        if isinstance(error, GoogleAPICallError):
+            app.logger.warning("Google Cloud Gate storage failure: %s %s", type(error).__name__, error.message)
+        else:
+            response = error.response
+            app.logger.warning("Google Cloud Gate IAM request failed: %s", response.status_code if response is not None else type(error).__name__)
         return jsonify(error="temporarily_unavailable"), 503
 
     @app.route("/hosts/<host>/grant", methods=["GET", "PUT", "DELETE"])

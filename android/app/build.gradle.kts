@@ -23,6 +23,7 @@ android {
         targetSdk = 35
         versionCode = 9
         versionName = "0.3.0"
+        buildConfigField("boolean", "GATE_E2E", "false")
     }
 
     buildTypes {
@@ -32,6 +33,8 @@ android {
         }
         debug {
             signingConfig = signingConfigs.getByName("stableDebug")
+            val e2e = providers.gradleProperty("gateE2e").orNull == "true"
+            buildConfigField("boolean", "GATE_E2E", e2e.toString())
         }
     }
 

@@ -5,11 +5,11 @@ This test is fully local and reproducible:
 1. Starts DynamoDB Local, the local vendor Lambda shim, and a local fake STS.
 2. Builds/installs the debug Android APK on an active emulator/device.
 3. Registers two host payloads through the app's debug pairing hook.
-4. Uses the emulator UI to select host A and tap Start.
+4. Uses the emulator UI to select host A and tap Apply.
 5. Runs two Docker "server" containers with different bearer tokens.
 6. Asserts host A receives credentials and GetCallerIdentity works via local fake STS.
 7. Asserts host B is refused by the local Lambda with 403.
-8. Uses the emulator UI to stop host A, select host B, and tap Start.
+8. Uses the emulator UI to stop host A, select host B, and tap Apply.
 9. Asserts the same two running containers flip: A is refused and B gets identity.
 
 The server containers use the normal AWS SDK credential provider chain. The
@@ -126,7 +126,7 @@ def wait_for_emulator_host_port(port: int, *, timeout: float = 45.0) -> None:
 
 
 def build_and_install_app() -> None:
-    run(["./gradlew", "assembleDebug", "--no-daemon"], cwd=ROOT / "android")
+    run(["./gradlew", "assembleDebug", "-PgateE2e=true", "--no-daemon"], cwd=ROOT / "android")
     adb(["install", "-r", "android/app/build/outputs/apk/debug/app-debug.apk"])
     adb(["shell", "pm", "clear", PKG])
 
@@ -205,6 +205,9 @@ def dump_ui() -> str:
         xml = adb(["exec-out", "cat", "/sdcard/aws-gate-window.xml"], capture=True, check=False)
         last = f"{dump}\n{xml}"
         if "<hierarchy" in xml:
+            if dismiss_emulator_launcher_anr(xml):
+                time.sleep(1)
+                continue
             return xml
         time.sleep(0.5)
     raise AssertionError(f"Could not dump emulator UI\n{last}")
@@ -218,6 +221,28 @@ def node_bounds(node: ET.Element) -> tuple[int, int, int, int]:
     return x1, y1, x2, y2
 
 
+def dismiss_emulator_launcher_anr(xml: str) -> bool:
+    root = ET.fromstring(xml)
+    nodes = list(root.iter("node"))
+    if not any(
+        node.get("package") == "android"
+        and node.get("resource-id") == "android:id/alertTitle"
+        and node.get("text") == "Quickstep isn't responding"
+        for node in nodes
+    ):
+        return False
+    close = next((
+        node for node in nodes
+        if node.get("package") == "android" and node.get("resource-id") == "android:id/aerr_close"
+    ), None)
+    if close is None or adb(["shell", "getprop", "ro.kernel.qemu"], capture=True).strip() != "1":
+        return False
+    x1, y1, x2, y2 = node_bounds(close)
+    adb(["shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2)])
+    print("Dismissed Android emulator Quickstep launcher ANR")
+    return True
+
+
 def tap_text(text: str, *, timeout: float = 20.0) -> None:
     deadline = time.time() + timeout
     last_xml = ""
@@ -225,7 +250,7 @@ def tap_text(text: str, *, timeout: float = 20.0) -> None:
         last_xml = dump_ui()
         root = ET.fromstring(last_xml)
         for node in root.iter("node"):
-            if node.attrib.get("text") == text:
+            if node.attrib.get("text") == text and node.attrib.get("enabled") != "false":
                 x1, y1, x2, y2 = node_bounds(node)
                 adb(["shell", "input", "tap", str((x1 + x2) // 2), str((y1 + y2) // 2)])
                 time.sleep(1)
@@ -384,10 +409,6 @@ def main() -> None:
         adb(["shell", "pm", "clear", PKG])
         register_hosts(host_a, host_b)
         assert_ui_contains("server-a", "Manage server-b", "Grant AWS Main", "Google Cloud")
-        ui = ET.fromstring(dump_ui())
-        checkboxes = [n for n in ui.iter("node") if n.attrib.get("class") == "android.widget.CheckBox"]
-        main_choices = [node for node in checkboxes if node.attrib.get("text") == "Grant AWS Main"]
-        assert len(main_choices) == 1 and main_choices[0].attrib.get("checked") == "false"
         screenshot = ROOT / "artifacts" / "main-access-checkbox.png"
         screenshot.parent.mkdir(exist_ok=True)
         with screenshot.open("wb") as image:
@@ -401,6 +422,7 @@ def main() -> None:
         assert_ui_contains("Manage server-a", "server-b")
         tap_text("Apply (1h)")
         wait_for_gate(host_a, active=True)
+        assert not status(host_a).main_access, "Default Apply unexpectedly granted AWS Main"
         wait_for_gate(host_b, active=False)
 
         logs_a = wait_for_log(server_a, "STS ok: arn:aws:sts::000000000000:assumed-role/phone-aws-sandbox-role/local-e2e")
