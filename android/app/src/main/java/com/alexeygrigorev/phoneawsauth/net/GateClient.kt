@@ -1,6 +1,7 @@
 package com.alexeygrigorev.phoneawsauth.net
 
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import aws.sdk.kotlin.runtime.auth.credentials.StaticCredentialsProvider
 import aws.sdk.kotlin.services.dynamodb.DynamoDbClient
 import aws.sdk.kotlin.services.dynamodb.model.AttributeValue
@@ -55,8 +56,8 @@ class GateClient(
     }
 
     suspend fun start(mode: String, durationMinutes: Int, note: String = "", mainAccess: Boolean = false): Result {
-        require(mode == "sandbox") {
-            "mode must be 'sandbox', got $mode"
+        require(mode == "sandbox" || (mode == "main" && mainAccess)) {
+            "Select AWS Sandbox, AWS Main, or both"
         }
         require(durationMinutes in 1..(24 * 60)) {
             "durationMinutes must be 1..1440, got $durationMinutes"
@@ -82,7 +83,10 @@ class GateClient(
             }
             client().use { it.putItem(req) }
             Result.Open(mode, now, expiresAt, note, mainAccess, grantId) as Result
-        }.getOrElse { Result.Error(it::class.simpleName ?: "Error", it.message ?: "") }
+        }.getOrElse {
+            if (it is CancellationException) throw it
+            Result.Error(it::class.simpleName ?: "Error", it.message ?: "")
+        }
     }
 
     suspend fun stop(): Result {
@@ -93,17 +97,24 @@ class GateClient(
             }
             client().use { it.deleteItem(req) }
             Result.Closed as Result
-        }.getOrElse { Result.Error(it::class.simpleName ?: "Error", it.message ?: "") }
+        }.getOrElse {
+            if (it is CancellationException) throw it
+            Result.Error(it::class.simpleName ?: "Error", it.message ?: "")
+        }
     }
 
     suspend fun status(): Result {
         return runCatching {
             val req = GetItemRequest {
                 tableName = table
+                consistentRead = true
                 key = mapOf("token_hash" to AttributeValue.S(rowKey))
             }
             resultFromItem(client().use { it.getItem(req) }.item, System.currentTimeMillis() / 1000)
-        }.getOrElse { Result.Error(it::class.simpleName ?: "Error", it.message ?: "") }
+        }.getOrElse {
+            if (it is CancellationException) throw it
+            Result.Error(it::class.simpleName ?: "Error", it.message ?: "")
+        }
     }
 }
 

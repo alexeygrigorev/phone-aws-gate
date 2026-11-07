@@ -44,7 +44,7 @@ class GateRow:
 
 def read_gate(token_hash: str) -> Optional[GateRow]:
     table = _ddb().Table(config.GATE_TABLE_NAME)
-    resp = table.get_item(Key={"token_hash": token_hash})
+    resp = table.get_item(Key={"token_hash": token_hash}, ConsistentRead=True)
     item = resp.get("Item")
     if not item:
         return None

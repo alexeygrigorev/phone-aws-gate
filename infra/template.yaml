@@ -136,6 +136,7 @@ Resources:
           ROLE_ARNS = {"sandbox": os.environ["SANDBOX_ROLE_ARN"]}
           SESSION_DURATION = int(os.environ.get("SESSION_DURATION", "900"))
           TABLE = "phone-aws-gate"
+          MAIN_ROLE_ARN = "arn:aws:iam::387546586013:role/aws-gate-main-access"
           log = logging.getLogger(__name__)
           log.setLevel(logging.INFO)
 
@@ -160,21 +161,28 @@ Resources:
 
               token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-              item = _ddb.get_item(Key={"token_hash": token_hash}).get("Item")
+              item = _ddb.get_item(Key={"token_hash": token_hash}, ConsistentRead=True).get("Item")
               now = int(time.time())
               if not item or not item.get("active") or int(item.get("expires_at", 0)) <= now:
                   return {"statusCode": 403, "body": "Gate closed"}
 
+              path = event.get("rawPath") or "/"
+              if path not in ("/", "/main"):
+                  return {"statusCode": 404, "body": "Not found"}
               mode = item.get("mode")
-              if mode not in ROLE_ARNS:
+              if mode not in (*ROLE_ARNS, "main"):
                   return {"statusCode": 500, "body": f"Bad mode in row: {mode!r}"}
 
+              main = path == "/main"
+              main_access = item.get("main_access") is True
+              if (main and not main_access) or (not main and mode == "main"):
+                  return {"statusCode": 403, "body": "Account not granted"}
+
               assume_args = dict(
-                  RoleArn=ROLE_ARNS[mode],
+                  RoleArn=ROLE_ARNS["sandbox" if main else mode],
                   RoleSessionName=f"phone-{mode}-{context.aws_request_id[:8]}",
                   DurationSeconds=SESSION_DURATION,
               )
-              main_access = item.get("main_access") is True
               grant_id = str(item.get("grant_id", f"{token_hash}-{item.get('started_at', 0)}"))
               if main_access:
                   assume_args["Tags"] = [
@@ -182,8 +190,19 @@ Resources:
                       {"Key": "aws-gate-grant", "Value": grant_id},
                   ]
               resp = _sts.assume_role(**assume_args)
-              log.info("vend grant_id=%s main_access=%s mode=%s", grant_id, main_access, mode)
               c = resp["Credentials"]
+              if main:
+                  c = boto3.client(
+                      "sts",
+                      aws_access_key_id=c["AccessKeyId"],
+                      aws_secret_access_key=c["SecretAccessKey"],
+                      aws_session_token=c["SessionToken"],
+                  ).assume_role(
+                      RoleArn=MAIN_ROLE_ARN,
+                      RoleSessionName=f"phone-main-{context.aws_request_id[:8]}",
+                      DurationSeconds=900,
+                  )["Credentials"]
+              log.info("vend grant_id=%s main_access=%s account=%s", grant_id, main_access, "main" if main else mode)
               return {
                   "statusCode": 200,
                   "headers": {"Content-Type": "application/json"},

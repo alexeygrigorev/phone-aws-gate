@@ -3,439 +3,447 @@ package com.alexeygrigorev.phoneawsauth.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.material3.Checkbox
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.fragment.app.FragmentActivity
 import com.alexeygrigorev.phoneawsauth.BuildConfig
 import com.alexeygrigorev.phoneawsauth.auth.BiometricResult
 import com.alexeygrigorev.phoneawsauth.auth.findFragmentActivity
 import com.alexeygrigorev.phoneawsauth.auth.requireBiometric
 import com.alexeygrigorev.phoneawsauth.net.GateClient
+import com.alexeygrigorev.phoneawsauth.net.GcpGateClient
 import com.alexeygrigorev.phoneawsauth.net.LocalDev
-import com.alexeygrigorev.phoneawsauth.settings.PairedConfig
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
 import com.alexeygrigorev.phoneawsauth.updates.ReleaseChecker
 import com.alexeygrigorev.phoneawsauth.updates.ReleaseInfo
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
-private sealed class UiState {
-    data object Loading : UiState()
-    data class Idle(val result: GateClient.Result) : UiState()
-    data class Busy(val previous: GateClient.Result?) : UiState()
+internal enum class CloudAccount(val label: String) {
+    Sandbox("AWS Sandbox"),
+    Main("AWS Main"),
+    GoogleCloud("Google Cloud"),
 }
+
+private data class HostGate(
+    val id: String,
+    val name: String,
+    val aws: GateClient,
+    val gcp: GcpGateClient? = null,
+)
+
+internal sealed interface AccessState {
+    data object Checking : AccessState
+    data object Closed : AccessState
+    data object Unavailable : AccessState
+    data object NotPaired : AccessState
+    data class Open(val expiresAt: Long) : AccessState
+}
+
+private data class HostStatus(val aws: GateClient.Result, val gcp: GcpGateClient.Result?)
+
+internal fun awsAccessState(result: GateClient.Result?, account: CloudAccount, now: Long): AccessState {
+    return when (result) {
+        null -> AccessState.Checking
+        is GateClient.Result.Error -> AccessState.Unavailable
+        GateClient.Result.Closed -> AccessState.Closed
+        is GateClient.Result.Open -> {
+            val allowed = when (account) {
+                CloudAccount.Sandbox -> result.mode == "sandbox"
+                CloudAccount.Main -> result.mainAccess && (result.mode == "main" || result.mode == "sandbox")
+                CloudAccount.GoogleCloud -> false
+            }
+            if (allowed && result.expiresAt > now) AccessState.Open(result.expiresAt) else AccessState.Closed
+        }
+    }
+}
+
+private fun accessState(host: HostGate, status: HostStatus?, account: CloudAccount, now: Long): AccessState {
+    if (account != CloudAccount.GoogleCloud) return awsAccessState(status?.aws, account, now)
+    if (host.gcp == null) return AccessState.NotPaired
+    return when (val result = status?.gcp) {
+        null -> AccessState.Checking
+        is GcpGateClient.Result.Error -> AccessState.Unavailable
+        is GcpGateClient.Result.Grant ->
+            if (result.expiresAt > now) AccessState.Open(result.expiresAt) else AccessState.Closed
+    }
+}
+
+private suspend fun readStatus(host: HostGate): HostStatus = coroutineScope {
+    val aws = async(Dispatchers.IO) { host.aws.status() }
+    val gcp = async(Dispatchers.IO) { host.gcp?.status() }
+    HostStatus(aws.await(), gcp.await())
+}
+
+private suspend fun setAccess(host: HostGate, accounts: Set<CloudAccount>, durationMinutes: Int): String? =
+    coroutineScope {
+        val aws = async(Dispatchers.IO) {
+            val sandbox = CloudAccount.Sandbox in accounts
+            val main = CloudAccount.Main in accounts
+            if (sandbox || main) {
+                host.aws.start(if (sandbox) "sandbox" else "main", durationMinutes, mainAccess = main)
+            } else {
+                host.aws.stop()
+            }
+        }
+        val gcp = async(Dispatchers.IO) {
+            host.gcp?.let {
+                if (CloudAccount.GoogleCloud in accounts) it.start(durationMinutes) else it.stop()
+            }
+        }
+        val awsResult = aws.await()
+        val gcpResult = gcp.await()
+        buildList {
+            if (awsResult is GateClient.Result.Error) add("AWS: ${awsResult.type}")
+            if (gcpResult is GcpGateClient.Result.Error) add("Google Cloud: ${gcpResult.message}")
+        }.joinToString("\n").ifEmpty { null }
+    }
 
 @Composable
 fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val settings = remember { PairedSettings(context) }
     val activity = remember(context) { context.findFragmentActivity() }
+    val preferences = remember(context) { context.getSharedPreferences("phone-aws-ui", 0) }
     var updateInfo by remember { mutableStateOf<ReleaseInfo?>(null) }
+    var pairedHosts by remember(pairVersion) { mutableStateOf(settings.hosts()) }
+    var selectedKey by remember(pairVersion) { mutableStateOf(settings.load()?.rowKey) }
+    var devOverride by remember(pairVersion) { mutableStateOf(false) }
+    val hosts = remember(pairedHosts, devOverride) {
+        pairedHosts.map { host ->
+            HostGate(
+                id = host.rowKey,
+                name = host.name,
+                aws = GateClient(host.rowKey, host.table, host.region, host.accessKeyId, host.secretAccessKey, host.ddbEndpoint),
+                gcp = host.gcp?.let { GcpGateClient(host.rowKey, it) },
+            )
+        }.ifEmpty {
+            if (devOverride) listOf(HostGate(LocalDev.ROW_KEY, "Local emulator", LocalDev.client())) else emptyList()
+        }
+    }
+    val statuses = remember(hosts) { mutableStateMapOf<String, HostStatus>() }
+    val selected = hosts.firstOrNull { it.id == selectedKey } ?: hosts.firstOrNull()
+    var busy by remember { mutableStateOf(false) }
+    var feedback by remember(selected?.id) { mutableStateOf<String?>(null) }
+    var edits by remember(selected?.id) { mutableStateOf<Set<CloudAccount>?>(null) }
+    var now by remember { mutableLongStateOf(epochSeconds()) }
+    val durationOptions = listOf(15, 60, 240, 480)
+    var durationIdx by remember {
+        mutableIntStateOf(durationIndexFor(durationOptions, preferences.getInt(KEY_DEFAULT_DURATION_MINUTES, 60)))
+    }
+
+    suspend fun refresh() = coroutineScope {
+        hosts.forEach { host ->
+            launch { statuses[host.id] = readStatus(host) }
+        }
+    }
 
     LaunchedEffect(Unit) {
         updateInfo = ReleaseChecker().check(currentVersionName(context))
+        while (true) {
+            now = epochSeconds()
+            delay(1000)
+        }
     }
+    LaunchedEffect(hosts) { refresh() }
 
-    // remember(pairVersion) re-reads settings after the Pair screen pops.
-    var paired by remember(pairVersion) { mutableStateOf(settings.load()) }
-    var hosts by remember(pairVersion) { mutableStateOf(settings.hosts()) }
-    var devOverride by remember(pairVersion) { mutableStateOf(false) }
-
-    val client: GateClient? = when {
-        paired != null -> buildClient(paired!!)
-        devOverride -> LocalDev.client()
-        else -> null
-    }
-
-    if (client == null) {
-        NotPairedScreen(
-            onPair = onPair,
-            onUseDevStack = { devOverride = true },
-            updateInfo = updateInfo,
-        )
-        return
-    }
-
-    // Biometric is required for paired (real-AWS) operations, skipped for
-    // local-dev (DDB Local can't escape the emulator anyway).
     val debugSkipBiometric = BuildConfig.DEBUG &&
         context.getSharedPreferences("phone-aws-debug", 0).getBoolean("skip_biometric", false)
-    val requireBio = paired != null && !debugSkipBiometric
 
-    GateControl(
-        client = client,
-        modeLabel = paired?.name ?: "local-dev",
-        hosts = hosts,
-        selectedRowKey = paired?.rowKey,
-        requireBiometric = requireBio,
-        activity = activity,
-        onUnpair = {
-            paired?.let { settings.remove(it.rowKey) } ?: settings.clear()
-            hosts = settings.hosts()
-            paired = settings.load()
-            devOverride = false
-        },
-        onSelectHost = { host ->
-            settings.select(host.rowKey)
-            paired = host
-        },
-        onPair = onPair,
-        updateInfo = updateInfo,
-    )
-}
+    fun apply(host: HostGate, accounts: Set<CloudAccount>, duration: Int) {
+        busy = true
+        feedback = null
+        scope.launch {
+            try {
+                if (accounts.isNotEmpty() && !devOverride && !debugSkipBiometric) {
+                    val authentication = activity?.let {
+                        requireBiometric(it, "Apply access for ${host.name}", "Cloud Gate")
+                    }
+                    feedback = when (authentication) {
+                        BiometricResult.Authenticated -> null
+                        BiometricResult.UserCancelled -> "Biometric cancelled"
+                        BiometricResult.NotAvailable -> "No biometric enrolled"
+                        is BiometricResult.Failed -> authentication.reason
+                        null -> "Biometric prompt is unavailable"
+                    }
+                    if (authentication != BiometricResult.Authenticated) return@launch
+                }
+                val error = setAccess(host, accounts, duration)
+                statuses[host.id] = readStatus(host)
+                now = epochSeconds()
+                edits = null
+                feedback = error?.let { "Some changes could not be confirmed:\n$it" }
+            } finally {
+                busy = false
+            }
+        }
+    }
 
-@Composable
-private fun NotPairedScreen(
-    onPair: () -> Unit,
-    onUseDevStack: () -> Unit,
-    updateInfo: ReleaseInfo?,
-) {
-    val context = LocalContext.current
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("AWS Gate", style = MaterialTheme.typography.titleLarge)
+        Text("Cloud Gate", style = MaterialTheme.typography.headlineMedium)
         UpdateBanner(updateInfo = updateInfo, onUpdate = { openUrl(context, it.apkUrl) })
-        Text(
-            "Not paired. Pair this device with a deployed stack to control its gate.",
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-        )
-        Spacer(Modifier.height(8.dp))
-        Button(modifier = Modifier.fillMaxWidth(), onClick = onPair) {
-            Text("Pair")
-        }
-        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onUseDevStack) {
-            Text("Use local-dev stack (emulator)")
-        }
-    }
-}
-
-@Composable
-private fun GateControl(
-    client: GateClient,
-    modeLabel: String,
-    hosts: List<PairedConfig>,
-    selectedRowKey: String?,
-    requireBiometric: Boolean,
-    activity: FragmentActivity?,
-    onUnpair: () -> Unit,
-    onSelectHost: (PairedConfig) -> Unit,
-    onPair: () -> Unit,
-    updateInfo: ReleaseInfo?,
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var mainAccess by remember(selectedRowKey) { mutableStateOf(false) }
-    var state by remember(client) { mutableStateOf<UiState>(UiState.Loading) }
-
-    LaunchedEffect(client) {
-        state = UiState.Idle(withContext(Dispatchers.IO) { client.status() })
-    }
-
-    val gateOp: suspend (String, suspend () -> GateClient.Result) -> GateClient.Result = { title, op ->
-        val biometricActivity = activity
-        if (!requireBiometric) {
-            op()
-        } else if (biometricActivity == null) {
-            GateClient.Result.Error("Biometric", "Biometric prompt is unavailable")
+        if (selected == null) {
+            Text("Register a computer to see and manage its cloud access.")
+            Button(onClick = onPair) { Text("Register computer") }
+            if (BuildConfig.DEBUG) {
+                OutlinedButton(onClick = { devOverride = true }) { Text("Use local emulator") }
+            }
         } else {
-            when (val auth = requireBiometric(biometricActivity, title, "AWS Gate")) {
-                BiometricResult.Authenticated -> op()
-                BiometricResult.UserCancelled -> GateClient.Result.Error("Cancelled", "Biometric cancelled")
-                BiometricResult.NotAvailable -> GateClient.Result.Error("NoBiometric", "No biometric enrolled")
-                is BiometricResult.Failed -> GateClient.Result.Error("Biometric", auth.reason)
+            Text("Access by computer", style = MaterialTheme.typography.titleMedium)
+            AccessMatrix(hosts, selected, statuses, now, enabled = !busy) { host ->
+                settings.select(host.id)
+                selectedKey = host.id
+            }
+            HorizontalDivider()
+            val status = statuses[selected.id]
+            val openAccounts = CloudAccount.entries.filter { accessState(selected, status, it, now) is AccessState.Open }.toSet()
+            val accounts = edits ?: openAccounts.ifEmpty { setOf(CloudAccount.Sandbox) }
+            val durationMinutes = durationOptions[durationIdx]
+            val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
+            val canApply = !busy && status != null && accounts.isNotEmpty()
+            Text("Manage ${selected.name}", style = MaterialTheme.typography.titleLarge)
+            Text("Apply sets access to the accounts you select.", style = MaterialTheme.typography.bodySmall)
+            Column {
+                CloudAccount.entries.forEach { account ->
+                    val paired = account != CloudAccount.GoogleCloud || selected.gcp != null
+                    AccountChoice(
+                        account = account,
+                        checked = account in accounts,
+                        enabled = !busy && paired,
+                        paired = paired,
+                    ) { checked ->
+                        edits = if (checked) accounts + account else accounts - account
+                    }
+                }
+            }
+            Text("Close automatically after", style = MaterialTheme.typography.labelLarge)
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                durationOptions.forEachIndexed { i, minutes ->
+                    SegmentedButton(
+                        shape = SegmentedButtonDefaults.itemShape(i, durationOptions.size),
+                        selected = i == durationIdx,
+                        enabled = !busy,
+                        onClick = {
+                            durationIdx = i
+                            preferences.edit().putInt(KEY_DEFAULT_DURATION_MINUTES, minutes).apply()
+                        },
+                    ) { Text(if (minutes < 60) "${minutes}m" else "${minutes / 60}h") }
+                }
+            }
+            feedback?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(enabled = canApply, onClick = { apply(selected, accounts, durationMinutes) }) {
+                    Text("Apply ($durationLabel)")
+                }
+                OutlinedButton(enabled = !busy && status != null, onClick = { apply(selected, emptySet(), durationMinutes) }) {
+                    Text("Stop all")
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(enabled = !busy, onClick = {
+                    busy = true
+                    scope.launch {
+                        try {
+                            refresh()
+                            now = epochSeconds()
+                        } finally {
+                            busy = false
+                        }
+                    }
+                }) { Text("Refresh") }
+                TextButton(enabled = !busy, onClick = onPair) { Text("Register computer") }
+            }
+            TextButton(enabled = !busy, onClick = {
+                if (devOverride) {
+                    devOverride = false
+                } else {
+                    settings.remove(selected.id)
+                    pairedHosts = settings.hosts()
+                    selectedKey = settings.load()?.rowKey
+                }
+            }) { Text("Forget ${selected.name}") }
+        }
+    }
+}
+
+@Composable
+private fun AccessMatrix(
+    hosts: List<HostGate>,
+    selected: HostGate,
+    statuses: Map<String, HostStatus>,
+    now: Long,
+    enabled: Boolean,
+    onSelect: (HostGate) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val accountWidth = 94.dp
+        val hostWidth = ((maxWidth - accountWidth) / hosts.size).coerceAtLeast(94.dp)
+        Row {
+            Column(Modifier.width(accountWidth)) {
+                MatrixLabel("Account", header = true)
+                CloudAccount.entries.forEach { MatrixLabel(it.label) }
+            }
+            Row(Modifier.weight(1f).horizontalScroll(rememberScrollState())) {
+                hosts.forEach { host ->
+                    val active = host == selected
+                    val colors = MaterialTheme.colorScheme
+                    Surface(
+                        modifier = Modifier.width(hostWidth),
+                        color = if (active) colors.primaryContainer else colors.surface,
+                        contentColor = if (active) colors.onPrimaryContainer else colors.onSurface,
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            TextButton(
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics {
+                                    this.selected = active
+                                },
+                                enabled = enabled,
+                                onClick = { onSelect(host) },
+                            ) {
+                                Text(host.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            CloudAccount.entries.forEach { account ->
+                                val state = accessState(host, statuses[host.id], account, now)
+                                val label = when (state) {
+                                    AccessState.Checking -> "Checking…"
+                                    AccessState.Closed -> "Closed"
+                                    AccessState.Unavailable -> "Unavailable"
+                                    AccessState.NotPaired -> "Not paired"
+                                    is AccessState.Open -> "Open · ${formatRemaining(state.expiresAt - now)}"
+                                }
+                                Box(
+                                    Modifier.fillMaxWidth().heightIn(min = 42.dp).clearAndSetSemantics {
+                                        contentDescription = "${host.name}, ${account.label}: $label"
+                                    },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    val color = when (state) {
+                                        is AccessState.Open -> colors.onSecondaryContainer
+                                        AccessState.Unavailable -> colors.error
+                                        else -> if (active) colors.onPrimaryContainer else colors.onSurfaceVariant
+                                    }
+                                    Surface(
+                                        color = if (state is AccessState.Open) colors.secondaryContainer
+                                            else Color.Transparent,
+                                        shape = MaterialTheme.shapes.small,
+                                    ) {
+                                        Text(
+                                            label,
+                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 3.dp),
+                                            color = color,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            textAlign = TextAlign.Center,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
+}
 
-    // Duration picker. Values map to start(durationMinutes).
-    val durationOptions = listOf(15, 60, 240, 480)
-    val uiPrefs = remember(context) { context.getSharedPreferences("phone-aws-ui", 0) }
-    var durationIdx by remember {
-        mutableIntStateOf(durationIndexFor(durationOptions, uiPrefs.getInt(KEY_DEFAULT_DURATION_MINUTES, 60)))
-    }
-    val durationMinutes = durationOptions[durationIdx]
-    val durationLabel = if (durationMinutes < 60) "${durationMinutes}m" else "${durationMinutes / 60}h"
-
-    val rawResult = (state as? UiState.Idle)?.result
-    // Tick once per second whenever we have an Open result so the UI can flip
-    // to CLOSED at expiry instead of showing "0:00 remaining" forever.
-    var nowSec by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
-    LaunchedEffect(rawResult) {
-        if (rawResult is GateClient.Result.Open) {
-            while (true) {
-                nowSec = System.currentTimeMillis() / 1000
-                delay(1000)
-            }
-        }
-    }
-    val displayResult = effectiveResult(rawResult, nowSec)
-    val displayState: UiState = when (state) {
-        is UiState.Idle -> displayResult?.let { UiState.Idle(it) } ?: state
-        else -> state
-    }
-    val busy = state is UiState.Busy
-    val gateActionsEnabled = canRunGateAction(result = displayResult, busy = busy)
-    val isOpen = displayResult is GateClient.Result.Open
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
-        horizontalAlignment = Alignment.CenterHorizontally,
+@Composable
+private fun MatrixLabel(label: String, header: Boolean = false) {
+    Box(
+        modifier = Modifier.heightIn(min = if (header) 48.dp else 42.dp),
+        contentAlignment = Alignment.CenterStart,
     ) {
         Text(
-            "AWS Gate",
-            style = MaterialTheme.typography.titleLarge,
+            label,
+            style = if (header) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        UpdateBanner(updateInfo = updateInfo, onUpdate = { openUrl(context, it.apkUrl) })
-        Text("[$modeLabel]", style = MaterialTheme.typography.bodySmall)
-        if (hosts.size > 1) {
-            hosts.forEach { host ->
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = host.rowKey != selectedRowKey,
-                    onClick = { onSelectHost(host) },
-                ) { Text(if (host.rowKey == selectedRowKey) "Selected: ${host.name}" else "Use ${host.name}") }
-            }
-        }
-        StatusBlock(displayState)
+    }
+}
 
-        Spacer(Modifier.height(8.dp))
-        HorizontalDivider()
-        Spacer(Modifier.height(8.dp))
-
-        Text("Auto-close TTL: $durationLabel", style = MaterialTheme.typography.labelMedium)
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            durationOptions.forEachIndexed { i, mins ->
-                SegmentedButton(
-                    shape = SegmentedButtonDefaults.itemShape(i, durationOptions.size),
-                    onClick = {
-                        durationIdx = i
-                        uiPrefs.edit().putInt(KEY_DEFAULT_DURATION_MINUTES, mins).apply()
-                    },
-                    selected = i == durationIdx,
-                ) {
-                    Text(if (mins < 60) "${mins}m" else "${mins / 60}h")
-                }
-            }
-        }
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = mainAccess, onCheckedChange = { mainAccess = it }, enabled = !busy)
-            Text("Also give access to MAIN")
-        }
-
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            enabled = gateActionsEnabled,
-            onClick = {
-                runStart(scope, gateOp, client, "sandbox", durationMinutes, mainAccess = mainAccess, isExtend = isOpen) {
-                    state = it
-                }
-            },
-        ) { Text(if (isOpen) "Extend ($durationLabel)" else "Start ($durationLabel)") }
-
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            enabled = gateActionsEnabled,
-            onClick = { runStop(scope, client) { state = it } },
-        ) { Text("Stop") }
-
-        Spacer(Modifier.height(8.dp))
-
-        OutlinedButton(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { runRefresh(scope, client) { state = it } },
-            enabled = !busy,
-        ) { Text("Refresh") }
-
-        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onPair) {
-            Text("Register another host")
-        }
-
-        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = onUnpair) {
-            Text("Forget this host")
-        }
+@Composable
+private fun AccountChoice(
+    account: CloudAccount,
+    checked: Boolean,
+    enabled: Boolean,
+    paired: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).toggleable(
+            value = checked,
+            enabled = enabled,
+            role = Role.Checkbox,
+            onValueChange = onCheckedChange,
+        ),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
+        Text(if (paired) "Grant ${account.label}" else "${account.label} · Pair this computer")
     }
 }
 
 @Composable
 private fun UpdateBanner(updateInfo: ReleaseInfo?, onUpdate: (ReleaseInfo) -> Unit) {
     updateInfo ?: return
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(
-            "New version available: ${updateInfo.tagName}",
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        OutlinedButton(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = { onUpdate(updateInfo) },
-        ) {
-            Text("Download update")
-        }
-    }
-}
-
-@Composable
-private fun StatusBlock(state: UiState) {
-    when (state) {
-        UiState.Loading -> Text("Checking gate…", textAlign = TextAlign.Center)
-        is UiState.Busy -> Text("Working…", textAlign = TextAlign.Center)
-        is UiState.Idle -> when (val r = state.result) {
-            is GateClient.Result.Closed ->
-                Text("Gate: CLOSED", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
-            is GateClient.Result.Open -> OpenStatus(r)
-            is GateClient.Result.Error ->
-                Text("ERROR: ${r.type}\n${r.message}",
-                    textAlign = TextAlign.Center,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.error)
-        }
-    }
-}
-
-@Composable
-private fun OpenStatus(r: GateClient.Result.Open) {
-    var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
-    LaunchedEffect(r.expiresAt) {
-        while (true) {
-            now = System.currentTimeMillis() / 1000
-            delay(1000)
-        }
-    }
-    val remaining = (r.expiresAt - now).coerceAtLeast(0L)
-    Text(
-        text = "Gate: OPEN (${r.mode}) · MAIN: ${if (r.mainAccess) "yes" else "no"}\n${formatRemaining(remaining)} remaining · until ${formatEpoch(r.expiresAt)}",
-        textAlign = TextAlign.Center,
-        style = MaterialTheme.typography.bodyLarge,
-    )
-}
-
-private fun formatRemaining(seconds: Long): String {
-    val h = seconds / 3600
-    val m = (seconds % 3600) / 60
-    val s = seconds % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
-}
-
-private fun buildClient(c: PairedConfig): GateClient = GateClient(
-    rowKey = c.rowKey,
-    table = c.table,
-    awsRegion = c.region,
-    accessKeyId = c.accessKeyId,
-    secretAccessKey = c.secretAccessKey,
-    ddbEndpoint = c.ddbEndpoint,
-)
-
-private fun formatEpoch(epochSeconds: Long): String {
-    val fmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    return fmt.format(Date(epochSeconds * 1000))
-}
-
-private fun runStart(
-    scope: CoroutineScope,
-    gateOp: suspend (String, suspend () -> GateClient.Result) -> GateClient.Result,
-    client: GateClient,
-    mode: String,
-    durationMinutes: Int,
-    mainAccess: Boolean = false,
-    isExtend: Boolean = false,
-    onState: (UiState) -> Unit,
-) {
-    onState(UiState.Busy(null))
-    scope.launch {
-        val title = if (isExtend) "Extend AWS gate ($mode)" else "Open AWS gate ($mode)"
-        val r = gateOp(title) {
-            withContext(Dispatchers.IO) { client.start(mode, durationMinutes, mainAccess = mainAccess) }
-        }
-        onState(UiState.Idle(r))
-    }
-}
-
-private fun runStop(
-    scope: CoroutineScope,
-    client: GateClient,
-    onState: (UiState) -> Unit,
-) {
-    onState(UiState.Busy(null))
-    scope.launch {
-        val r = withContext(Dispatchers.IO) {
-            client.stop()
-            client.status()
-        }
-        onState(UiState.Idle(r))
-    }
-}
-
-private fun runRefresh(scope: CoroutineScope, client: GateClient, onState: (UiState) -> Unit) {
-    onState(UiState.Busy(null))
-    scope.launch {
-        val result = withContext(Dispatchers.IO) { client.status() }
-        onState(UiState.Idle(result))
-    }
-}
-
-internal fun canRunGateAction(result: GateClient.Result?, busy: Boolean): Boolean {
-    return !busy && result != null && result !is GateClient.Result.Error
-}
-
-internal fun effectiveResult(raw: GateClient.Result?, nowSec: Long): GateClient.Result? {
-    return if (raw is GateClient.Result.Open && raw.expiresAt <= nowSec) {
-        GateClient.Result.Closed
-    } else {
-        raw
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("New version: ${updateInfo.tagName}", style = MaterialTheme.typography.bodyMedium)
+        TextButton(onClick = { onUpdate(updateInfo) }) { Text("Download update") }
     }
 }
 
@@ -444,13 +452,15 @@ internal fun durationIndexFor(options: List<Int>, savedMinutes: Int): Int {
     return if (exact >= 0) exact else options.indexOf(60).takeIf { it >= 0 } ?: 0
 }
 
-private fun currentVersionName(context: Context): String {
-    return try {
-        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "0.0.0"
-    } catch (_: Exception) {
-        "0.0.0"
-    }
+private fun epochSeconds(): Long = System.currentTimeMillis() / 1000
+
+private fun formatRemaining(seconds: Long): String = when {
+    seconds >= 3600 -> String.format(Locale.ROOT, "%dh %02dm", seconds / 3600, seconds % 3600 / 60)
+    else -> String.format(Locale.ROOT, "%d:%02d", seconds / 60, seconds % 60)
 }
+
+private fun currentVersionName(context: Context): String =
+    runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: "0.0.0"
 
 private fun openUrl(context: Context, url: String) {
     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))

@@ -93,6 +93,6 @@ def test_install_main_preserves_default(tmp_path):
     update_aws_config(path, region="eu-west-1", credential_command="gate-command")
     config.read(path)
     assert dict(config["default"]) == old
-    assert config["profile main"]["source_profile"] == "default"
-    assert config["profile main"]["duration_seconds"] == "900"
-    assert config["profile main"]["role_arn"] == "arn:aws:iam::387546586013:role/aws-gate-main-access"
+    assert dict(config["profile main"]) == {
+        "region": "eu-west-1", "credential_process": "gate-command --account main",
+    }
