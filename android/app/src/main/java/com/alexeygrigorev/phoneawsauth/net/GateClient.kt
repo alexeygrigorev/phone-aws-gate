@@ -254,12 +254,12 @@ class GateClient(
 
     private suspend fun removePendingEntry(ddb: DynamoDbClient, targetHash: String, requestId: String, now: Long) {
         for (pendingKey in listOf("pending:$targetHash", "pending:global")) {
-            val item = ddb.getItem(GetItemRequest {
+            val pendingRow = ddb.getItem(GetItemRequest {
                 tableName = table
                 consistentRead = true
                 key = mapOf("token_hash" to AttributeValue.S(pendingKey))
             }).item ?: continue
-            val list = (item["requests"] as? AttributeValue.L)?.value ?: emptyList()
+            val list = (pendingRow["requests"] as? AttributeValue.L)?.value ?: emptyList()
             val kept = list.filter { entry ->
                 val map = (entry as? AttributeValue.M)?.value ?: return@filter false
                 val id = (map["id"] as? AttributeValue.S)?.value ?: ""
@@ -268,7 +268,7 @@ class GateClient(
             }
             ddb.putItem(PutItemRequest {
                 tableName = table
-                item = mapOf(
+                this.item = mapOf(
                     "token_hash" to AttributeValue.S(pendingKey),
                     "requests" to AttributeValue.L(kept),
                     "expires_at" to AttributeValue.N((now + 86400L).toString()),
