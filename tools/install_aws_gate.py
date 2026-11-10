@@ -1,12 +1,15 @@
-"""Install AWS Gate as an AWS shared-config credential provider.
+"""Install and use AWS Gate / Phone Gate as a phone-approved credential and resource provider.
 
 This intentionally does not modify shell startup files. It writes:
 
 - ~/.config/aws-gate/env: the Lambda URL + bearer token used by AWS Gate
 - ~/.aws/config: a default profile with credential_process
 
-After that, AWS CLI and SDKs that support AWS shared config can resolve
-credentials without depending on .bashrc or per-shell exports.
+And provides CLI commands for agents to request and check phone approvals:
+- request: submit a pending request (who asks, for what resource, why, for how long)
+- status: check a request's state (pending, approved, denied, expired)
+- check: check whether a resource/scope grant is currently open
+- sms-heartbeat / sms-push / sms-poll: phone-gated SMS code relay
 """
 
 from __future__ import annotations
@@ -24,8 +27,17 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
+
+ALLOWED_RESOURCES = ("aws-sandbox", "aws-main", "browser", "sms")
+DEFAULT_SCOPES = {
+    "aws-sandbox": "sandbox",
+    "aws-main": "main",
+    "browser": "desktop",
+    "sms": "login",
+}
 
 
 def parse_env_file(path: Path) -> dict[str, str]:
@@ -48,6 +60,30 @@ def parse_env_file(path: Path) -> dict[str, str]:
             key, value = item.split("=", 1)
             values[key] = value
     return values
+
+
+def _resolve_gate_env(env_arg: str) -> tuple[str, str]:
+    path = Path(env_arg).expanduser()
+    if not path.exists():
+        fallback = Path("/home/alexey/.config/aws-gate/env")
+        if fallback.exists():
+            path = fallback
+    values = parse_env_file(path)
+    url = (
+        os.environ.get("PHONE_GATE_URL")
+        or os.environ.get("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+        or values.get("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+        or ""
+    ).strip()
+    token = (
+        os.environ.get("PHONE_GATE_TOKEN")
+        or os.environ.get("AWS_CONTAINER_AUTHORIZATION_TOKEN")
+        or values.get("AWS_CONTAINER_AUTHORIZATION_TOKEN")
+        or ""
+    ).strip()
+    if not url or not token:
+        raise SystemExit(f"Missing AWS_CONTAINER_CREDENTIALS_FULL_URI or AWS_CONTAINER_AUTHORIZATION_TOKEN in {path}")
+    return url.rstrip("/"), token
 
 
 def cloudformation_vendor_url(stack_name: str, region: str) -> str:
@@ -155,7 +191,6 @@ def update_aws_config(path: Path, *, region: str, credential_command: str) -> Pa
 
 
 def install(args: argparse.Namespace) -> int:
-    runtime_env = Path(args.runtime_env).expanduser()
     gate_env = Path(args.env_file).expanduser()
     aws_config = Path(args.aws_config).expanduser()
 
@@ -224,7 +259,7 @@ def pairing_payload(args: argparse.Namespace) -> dict[str, str]:
 
     controller = controller_config(args)
     name = args.name or socket.gethostname()
-    payload = {
+    return {
         "name": name,
         "region": controller.get("region", args.region),
         "table": controller.get("table", "phone-aws-gate"),
@@ -232,11 +267,6 @@ def pairing_payload(args: argparse.Namespace) -> dict[str, str]:
         "accessKeyId": controller["accessKeyId"],
         "secretAccessKey": controller["secretAccessKey"],
     }
-    gcp_pairing = getattr(args, "gcp_pairing", None)
-    if gcp_pairing:
-        gcp = json.loads(Path(gcp_pairing).expanduser().read_text(encoding="utf-8"))
-        payload.update(gcpUrl=gcp["gcpUrl"], gcpControllerToken=gcp["gcpControllerToken"])
-    return payload
 
 
 def pair_qr(args: argparse.Namespace) -> int:
@@ -253,6 +283,15 @@ def pair_qr(args: argparse.Namespace) -> int:
     return 0
 
 
+def _error_reason(error: urllib.error.HTTPError) -> str:
+    """Short vendor reason (e.g. "Gate closed"); the vendor error body carries no secrets."""
+    try:
+        text = error.read(200).decode("utf-8", "replace")
+    except Exception:
+        return ""
+    return " ".join(text.split())[:100]
+
+
 def credential_process(args: argparse.Namespace) -> int:
     values = parse_env_file(Path(args.env).expanduser())
     url = values["AWS_CONTAINER_CREDENTIALS_FULL_URI"]
@@ -265,7 +304,9 @@ def credential_process(args: argparse.Namespace) -> int:
         with urllib.request.urlopen(request, timeout=args.timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        print(f"AWS Gate is closed or denied: HTTP {e.code}", file=sys.stderr)
+        reason = _error_reason(e)
+        suffix = f" ({reason})" if reason else ""
+        print(f"AWS Gate is closed or denied: HTTP {e.code}{suffix}", file=sys.stderr)
         return 1
 
     if args.account == "main" and payload.get("Account") != "main":
@@ -284,6 +325,172 @@ def credential_process(args: argparse.Namespace) -> int:
         ),
     )
     return 0
+
+
+def _format_duration(ttl_s: int) -> str:
+    if ttl_s % 3600 == 0:
+        h = ttl_s // 3600
+        return f"{h}h"
+    if ttl_s % 60 == 0:
+        m = ttl_s // 60
+        return f"{m}m"
+    return f"{ttl_s}s"
+
+
+def _notify_phone(req_obj: dict) -> None:
+    """Notify Alexey's phone via tools.dtcdev.click/approve or local Telegram bot config if available."""
+    notify_url = os.environ.get("PHONE_GATE_NOTIFY_URL", "https://tools.dtcdev.click/api/phone-gate/notify")
+    tools_secret = os.environ.get("DTC_TOOLS_SECRET", "")
+    if not tools_secret:
+        for candidate in (Path.home() / ".env", Path("/home/alexey/.env")):
+            if candidate.exists():
+                env_vals = parse_env_file(candidate)
+                tools_secret = env_vals.get("DTC_TOOLS_SECRET", "")
+                if tools_secret:
+                    break
+    if notify_url and tools_secret:
+        try:
+            data = json.dumps(req_obj).encode("utf-8")
+            http_req = urllib.request.Request(
+                notify_url,
+                data=data,
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {tools_secret}",
+                    "Content-Type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(http_req, timeout=5.0):
+                return
+        except Exception:
+            pass
+
+    # Fallback: direct Telegram notification to Alexey's phone if bot token is configured on host
+    tg_env = Path("/home/alexey/git/personal-life-agent/.env")
+    if tg_env.exists():
+        vals = parse_env_file(tg_env)
+        bot_token = vals.get("TELEGRAM_TOKEN", "")
+        chat_id = vals.get("ALLOWED_USERS", "").split(",")[0].strip()
+        if bot_token and chat_id:
+            req_id = req_obj.get("id", "")
+            requester = req_obj.get("requester", "agent")
+            resource = req_obj.get("resource", "")
+            scope = req_obj.get("scope", "")
+            reason = req_obj.get("reason", "")
+            ttl_str = _format_duration(int(req_obj.get("ttl_s", 3600)))
+            approve_url = f"https://tools.dtcdev.click/approve?id={urllib.parse.quote(str(req_id))}"
+            text = (
+                f"Phone Approval Request ({req_id})\n"
+                f"• Who asks: {requester}\n"
+                f"• Resource: {resource} ({scope})\n"
+                f"• Why: {reason}\n"
+                f"• Duration: {ttl_str}\n\n"
+                f"Tap Approve or Deny in the Cloud Gate phone app, or open on phone:\n{approve_url}"
+            )
+            try:
+                tg_data = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+                tg_req = urllib.request.Request(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    data=tg_data,
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(tg_req, timeout=5.0):
+                    pass
+            except Exception:
+                pass
+
+
+def _vendor_http(
+    base_url: str,
+    token: str,
+    method: str,
+    path: str,
+    body: dict | None = None,
+    timeout: float = 10.0,
+) -> dict:
+    url = f"{base_url.rstrip('/')}{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Authorization": token}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        reason = _error_reason(e)
+        raise SystemExit(f"phone-aws-gate HTTP {e.code}: {reason}") from e
+
+
+def cmd_request(args: argparse.Namespace) -> int:
+    url, token = _resolve_gate_env(args.env_file)
+    scope = args.scope or DEFAULT_SCOPES.get(args.resource, "default")
+    req_obj = _vendor_http(
+        url,
+        token,
+        "POST",
+        "/requests",
+        {
+            "requester": args.requester,
+            "resource": args.resource,
+            "scope": scope,
+            "reason": args.reason,
+            "ttl_s": args.ttl,
+        },
+        timeout=args.timeout,
+    )
+    if not args.no_notify:
+        _notify_phone(req_obj)
+
+    if not args.wait:
+        print(json.dumps(req_obj, indent=2))
+        return 0
+
+    req_id = req_obj["id"]
+    print(
+        f"Waiting for phone approval of request {req_id} "
+        f"({args.requester} -> {args.resource}:{scope} for {_format_duration(args.ttl)})...",
+        file=sys.stderr,
+    )
+    deadline = time.time() + args.wait_timeout
+    while time.time() < deadline:
+        cur = _vendor_http(url, token, "GET", f"/requests/{req_id}", timeout=args.timeout)
+        state = cur.get("state")
+        if state == "approved":
+            print(json.dumps(cur, indent=2))
+            return 0
+        if state in ("denied", "expired"):
+            print(json.dumps(cur, indent=2), file=sys.stderr)
+            return 2
+        time.sleep(args.poll_interval)
+
+    print(f"Timed out waiting for phone approval of request {req_id}", file=sys.stderr)
+    return 3
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    url, token = _resolve_gate_env(args.env_file)
+    res = _vendor_http(url, token, "GET", f"/requests/{args.request_id}", timeout=args.timeout)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("state") == "approved" else 2
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    url, token = _resolve_gate_env(args.env_file)
+    scope = args.scope or DEFAULT_SCOPES.get(args.resource, "default")
+    q = urllib.parse.urlencode({"resource": args.resource, "scope": scope})
+    res = _vendor_http(url, token, "GET", f"/check?{q}", timeout=args.timeout)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("granted") else 2
+
+
+def cmd_sms_poll(args: argparse.Namespace) -> int:
+    url, token = _resolve_gate_env(args.env_file)
+    q = urllib.parse.urlencode({"scope": args.scope})
+    res = _vendor_http(url, token, "GET", f"/sms/poll?{q}", timeout=args.timeout)
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("code") else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -323,6 +530,39 @@ def build_parser() -> argparse.ArgumentParser:
     pair_parser.add_argument("--gcp-pairing", help="Private pair.json from provision_gcp_gate.py")
     pair_parser.add_argument("--json", action="store_true")
     pair_parser.set_defaults(func=pair_qr)
+
+    req_parser = sub.add_parser("request")
+    req_parser.add_argument("--env-file", default=os.environ.get("AWS_GATE_ENV_FILE", "~/.config/aws-gate/env"))
+    req_parser.add_argument("--requester", required=True, help="Who is asking (session or agent name)")
+    req_parser.add_argument("--resource", required=True, choices=ALLOWED_RESOURCES, help="Resource requested")
+    req_parser.add_argument("--scope", default="", help="Resource scope (e.g. desktop, sandbox, main, login)")
+    req_parser.add_argument("--reason", required=True, help="Why the access is needed")
+    req_parser.add_argument("--ttl", type=int, default=1800, help="Duration in seconds (60..86400)")
+    req_parser.add_argument("--wait", action="store_true", help="Wait and poll until approved/denied/expired")
+    req_parser.add_argument("--wait-timeout", type=float, default=900.0)
+    req_parser.add_argument("--poll-interval", type=float, default=3.0)
+    req_parser.add_argument("--no-notify", action="store_true")
+    req_parser.add_argument("--timeout", type=float, default=10.0)
+    req_parser.set_defaults(func=cmd_request)
+
+    status_parser = sub.add_parser("status")
+    status_parser.add_argument("request_id")
+    status_parser.add_argument("--env-file", default=os.environ.get("AWS_GATE_ENV_FILE", "~/.config/aws-gate/env"))
+    status_parser.add_argument("--timeout", type=float, default=10.0)
+    status_parser.set_defaults(func=cmd_status)
+
+    check_parser = sub.add_parser("check")
+    check_parser.add_argument("--resource", required=True, choices=ALLOWED_RESOURCES)
+    check_parser.add_argument("--scope", default="")
+    check_parser.add_argument("--env-file", default=os.environ.get("AWS_GATE_ENV_FILE", "~/.config/aws-gate/env"))
+    check_parser.add_argument("--timeout", type=float, default=10.0)
+    check_parser.set_defaults(func=cmd_check)
+
+    sms_poll_parser = sub.add_parser("sms-poll")
+    sms_poll_parser.add_argument("--scope", default="login")
+    sms_poll_parser.add_argument("--env-file", default=os.environ.get("AWS_GATE_ENV_FILE", "~/.config/aws-gate/env"))
+    sms_poll_parser.add_argument("--timeout", type=float, default=10.0)
+    sms_poll_parser.set_defaults(func=cmd_sms_poll)
 
     return parser
 
