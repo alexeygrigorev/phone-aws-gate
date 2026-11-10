@@ -210,8 +210,7 @@ def install(args: argparse.Namespace) -> int:
     write_gate_env(gate_env, region=args.region, vendor_url=vendor_url, bearer=bearer)
 
     script = Path(__file__).resolve()
-    command = [sys.executable, str(script), "credential-process", "--env", str(gate_env)]
-    credential_command = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
+    credential_command = f"python3 {shlex.quote(str(script))} credential-process --env {shlex.quote(str(gate_env))}"
     backup = update_aws_config(aws_config, region=args.region, credential_command=credential_command)
 
     removed_bashrc = remove_bashrc_block(Path.home() / ".bashrc")
@@ -337,18 +336,18 @@ def _format_duration(ttl_s: int) -> str:
     return f"{ttl_s}s"
 
 
-def _notify_phone(req_obj: dict) -> None:
-    """Notify Alexey's phone via tools.dtcdev.click/approve or local Telegram bot config if available."""
-    notify_url = os.environ.get("PHONE_GATE_NOTIFY_URL", "https://tools.dtcdev.click/api/phone-gate/notify")
-    tools_secret = os.environ.get("DTC_TOOLS_SECRET", "")
-    if not tools_secret:
+def _notify_phone(req_obj: dict, gate_token: str = "") -> None:
+    """Register request with tools.dtcdev.click/approve and notify Alexey's phone."""
+    notify_url = os.environ.get("PHONE_GATE_NOTIFY_URL", "https://tools.dtcdev.click/api/phone-gate/requests")
+    auth_token = gate_token or os.environ.get("DTC_TOOLS_SECRET", "")
+    if not auth_token:
         for candidate in (Path.home() / ".env", Path("/home/alexey/.env")):
             if candidate.exists():
                 env_vals = parse_env_file(candidate)
-                tools_secret = env_vals.get("DTC_TOOLS_SECRET", "")
-                if tools_secret:
+                auth_token = env_vals.get("DTC_TOOLS_SECRET", "")
+                if auth_token:
                     break
-    if notify_url and tools_secret:
+    if notify_url and auth_token:
         try:
             data = json.dumps(req_obj).encode("utf-8")
             http_req = urllib.request.Request(
@@ -356,49 +355,61 @@ def _notify_phone(req_obj: dict) -> None:
                 data=data,
                 method="POST",
                 headers={
-                    "Authorization": f"Bearer {tools_secret}",
+                    "Authorization": f"Bearer {auth_token}",
                     "Content-Type": "application/json",
                 },
             )
             with urllib.request.urlopen(http_req, timeout=5.0):
-                return
+                pass
         except Exception:
             pass
 
     # Fallback: direct Telegram notification to Alexey's phone if bot token is configured on host
-    tg_env = Path("/home/alexey/git/personal-life-agent/.env")
-    if tg_env.exists():
-        vals = parse_env_file(tg_env)
-        bot_token = vals.get("TELEGRAM_TOKEN", "")
-        chat_id = vals.get("ALLOWED_USERS", "").split(",")[0].strip()
-        if bot_token and chat_id:
-            req_id = req_obj.get("id", "")
-            requester = req_obj.get("requester", "agent")
-            resource = req_obj.get("resource", "")
-            scope = req_obj.get("scope", "")
-            reason = req_obj.get("reason", "")
-            ttl_str = _format_duration(int(req_obj.get("ttl_s", 3600)))
-            approve_url = f"https://tools.dtcdev.click/approve?id={urllib.parse.quote(str(req_id))}"
-            text = (
-                f"Phone Approval Request ({req_id})\n"
-                f"• Who asks: {requester}\n"
-                f"• Resource: {resource} ({scope})\n"
-                f"• Why: {reason}\n"
-                f"• Duration: {ttl_str}\n\n"
-                f"Tap Approve or Deny in the Cloud Gate phone app, or open on phone:\n{approve_url}"
-            )
-            try:
-                tg_data = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
-                tg_req = urllib.request.Request(
-                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
-                    data=tg_data,
-                    method="POST",
-                    headers={"Content-Type": "application/json"},
+    # Deduplicate by (requester, resource, scope) within 15 minutes so retries never spam the phone.
+    dedup_file = Path("/home/alexey/.config/aws-gate/notify-dedup.json")
+    dedup_key = f"{req_obj.get('requester','')}:{req_obj.get('resource','')}:{req_obj.get('scope','')}"
+    now_ts = int(time.time())
+    try:
+        dedup = json.loads(dedup_file.read_text(encoding="utf-8")) if dedup_file.exists() else {}
+    except Exception:
+        dedup = {}
+    if int(dedup.get(dedup_key, 0)) > now_ts - 900:
+        return
+    for tg_env in (Path("/home/alexey/git/personal-life-agent/.env"), Path("/home/alexey/git/telegram-writing-assistant/.env")):
+        if tg_env.exists():
+            vals = parse_env_file(tg_env)
+            bot_token = vals.get("TELEGRAM_TOKEN") or vals.get("TELEGRAM_BOT_API_KEY") or ""
+            chat_id = (vals.get("ALLOWED_USERS") or vals.get("TELEGRAM_CHAT_ID") or "").split(",")[0].strip()
+            if bot_token and chat_id:
+                req_id = req_obj.get("id", "")
+                requester = req_obj.get("requester", "agent")
+                resource = req_obj.get("resource", "")
+                scope = req_obj.get("scope", "")
+                reason = req_obj.get("reason", "")
+                ttl_str = _format_duration(int(req_obj.get("ttl_s", 3600)))
+                approve_url = f"https://tools.dtcdev.click/approve?id={urllib.parse.quote(str(req_id))}"
+                text = (
+                    f"Phone Approval Request ({req_id})\n"
+                    f"• Who asks: {requester}\n"
+                    f"• Resource: {resource} ({scope})\n"
+                    f"• Why: {reason}\n"
+                    f"• Duration: {ttl_str}\n\n"
+                    f"Tap Approve or Deny in the Cloud Gate phone app, or open on phone:\n{approve_url}"
                 )
-                with urllib.request.urlopen(tg_req, timeout=5.0):
+                try:
+                    tg_data = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+                    tg_req = urllib.request.Request(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        data=tg_data,
+                        method="POST",
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urllib.request.urlopen(tg_req, timeout=5.0):
+                        dedup[dedup_key] = now_ts
+                        dedup_file.write_text(json.dumps(dedup), encoding="utf-8")
+                        break
+                except Exception:
                     pass
-            except Exception:
-                pass
 
 
 def _vendor_http(
@@ -423,6 +434,24 @@ def _vendor_http(
         raise SystemExit(f"phone-aws-gate HTTP {e.code}: {reason}") from e
 
 
+def _fetch_request_status(url: str, token: str, req_id: str, timeout: float = 10.0) -> dict:
+    cur = _vendor_http(url, token, "GET", f"/requests/{req_id}", timeout=timeout)
+    if cur.get("state") == "pending":
+        tools_base = os.environ.get("TOOLS_ORIGIN", "https://tools.dtcdev.click").rstrip("/")
+        try:
+            req = urllib.request.Request(
+                f"{tools_base}/api/phone-gate/requests/{urllib.parse.quote(str(req_id))}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
+                tools_cur = json.loads(resp.read().decode("utf-8"))
+                if tools_cur.get("state") in ("approved", "denied"):
+                    cur["state"] = tools_cur["state"]
+        except Exception:
+            pass
+    return cur
+
+
 def cmd_request(args: argparse.Namespace) -> int:
     url, token = _resolve_gate_env(args.env_file)
     scope = args.scope or DEFAULT_SCOPES.get(args.resource, "default")
@@ -440,8 +469,9 @@ def cmd_request(args: argparse.Namespace) -> int:
         },
         timeout=args.timeout,
     )
+    req_obj["approve_url"] = f"https://tools.dtcdev.click/approve?id={urllib.parse.quote(str(req_obj['id']))}"
     if not args.no_notify:
-        _notify_phone(req_obj)
+        _notify_phone(req_obj, token)
 
     if not args.wait:
         print(json.dumps(req_obj, indent=2))
@@ -455,7 +485,7 @@ def cmd_request(args: argparse.Namespace) -> int:
     )
     deadline = time.time() + args.wait_timeout
     while time.time() < deadline:
-        cur = _vendor_http(url, token, "GET", f"/requests/{req_id}", timeout=args.timeout)
+        cur = _fetch_request_status(url, token, req_id, timeout=args.timeout)
         state = cur.get("state")
         if state == "approved":
             print(json.dumps(cur, indent=2))
@@ -471,7 +501,7 @@ def cmd_request(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     url, token = _resolve_gate_env(args.env_file)
-    res = _vendor_http(url, token, "GET", f"/requests/{args.request_id}", timeout=args.timeout)
+    res = _fetch_request_status(url, token, args.request_id, timeout=args.timeout)
     print(json.dumps(res, indent=2))
     return 0 if res.get("state") == "approved" else 2
 
@@ -527,7 +557,6 @@ def build_parser() -> argparse.ArgumentParser:
     pair_parser.add_argument("--stack-name", default=os.environ.get("STACK_NAME", "phone-aws-auth"))
     pair_parser.add_argument("--controller-file", default=".runtime/controller.json")
     pair_parser.add_argument("--env-file", default=os.environ.get("AWS_GATE_ENV_FILE", "~/.config/aws-gate/env"))
-    pair_parser.add_argument("--gcp-pairing", help="Private pair.json from provision_gcp_gate.py")
     pair_parser.add_argument("--json", action="store_true")
     pair_parser.set_defaults(func=pair_qr)
 
