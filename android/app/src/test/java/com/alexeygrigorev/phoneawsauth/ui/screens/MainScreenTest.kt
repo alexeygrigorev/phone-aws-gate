@@ -42,4 +42,11 @@ class MainScreenTest {
     fun durationIndexFallsBackToOneHourWhenSavedOptionIsInvalid() {
         assertEquals(1, durationIndexFor(listOf(15, 60, 240, 480), savedMinutes = 999))
     }
+
+    @Test
+    fun formatDurationLabelFormatsHoursMinutesAndSeconds() {
+        assertEquals("1h", formatDurationLabel(3600))
+        assertEquals("30m", formatDurationLabel(1800))
+        assertEquals("90s", formatDurationLabel(90))
+    }
 }

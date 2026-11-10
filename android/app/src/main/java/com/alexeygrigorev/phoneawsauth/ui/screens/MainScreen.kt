@@ -1,5 +1,8 @@
 package com.alexeygrigorev.phoneawsauth.ui.screens
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -50,7 +53,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationCompat
 import com.alexeygrigorev.phoneawsauth.BuildConfig
+import com.alexeygrigorev.phoneawsauth.MainActivity
 import com.alexeygrigorev.phoneawsauth.auth.BiometricResult
 import com.alexeygrigorev.phoneawsauth.auth.findFragmentActivity
 import com.alexeygrigorev.phoneawsauth.auth.requireBiometric
@@ -88,7 +93,11 @@ internal sealed interface AccessState {
     data class Open(val expiresAt: Long) : AccessState
 }
 
-private data class HostStatus(val aws: GateClient.Result, val gcp: GcpGateClient.Result?)
+private data class HostStatus(
+    val aws: GateClient.Result,
+    val gcp: GcpGateClient.Result?,
+    val pending: List<GateClient.ApprovalRequest> = emptyList(),
+)
 
 internal fun awsAccessState(result: GateClient.Result?, account: CloudAccount, now: Long): AccessState {
     return when (result) {
@@ -117,10 +126,11 @@ private fun accessState(host: HostGate, status: HostStatus?, account: CloudAccou
     }
 }
 
-private suspend fun readStatus(host: HostGate): HostStatus = coroutineScope {
+private suspend fun readStatus(host: HostGate, includePending: Boolean = true): HostStatus = coroutineScope {
     val aws = async(Dispatchers.IO) { host.aws.status() }
     val gcp = async(Dispatchers.IO) { host.gcp?.status() }
-    HostStatus(aws.await(), gcp.await())
+    val pending = async(Dispatchers.IO) { if (includePending) host.aws.pendingRequests(includeGlobal = true) else emptyList() }
+    HostStatus(aws.await(), gcp.await(), pending.await())
 }
 
 private suspend fun setAccess(host: HostGate, accounts: Set<CloudAccount>, durationMinutes: Int): String? =
@@ -171,6 +181,7 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
         }
     }
     val statuses = remember(hosts) { mutableStateMapOf<String, HostStatus>() }
+    val notifiedRequestIds = remember { mutableStateMapOf<String, Boolean>() }
     val selected = hosts.firstOrNull { it.id == selectedKey } ?: hosts.firstOrNull()
     var busy by remember { mutableStateOf(false) }
     var feedback by remember(selected?.id) { mutableStateOf<String?>(null) }
@@ -182,8 +193,16 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
     }
 
     suspend fun refresh() = coroutineScope {
-        hosts.forEach { host ->
-            launch { statuses[host.id] = readStatus(host) }
+        hosts.forEachIndexed { idx, host ->
+            launch {
+                val st = readStatus(host, includePending = idx == 0 || host.id == selected?.id)
+                statuses[host.id] = st
+                st.pending.forEach { req ->
+                    if (notifiedRequestIds.put(req.id, true) == null) {
+                        notifyPendingRequest(context, req)
+                    }
+                }
+            }
         }
     }
 
@@ -194,7 +213,12 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
             delay(1000)
         }
     }
-    LaunchedEffect(hosts) { refresh() }
+    LaunchedEffect(hosts) {
+        while (hosts.isNotEmpty()) {
+            refresh()
+            delay(5000)
+        }
+    }
 
     val debugSkipBiometric = BuildConfig.GATE_E2E &&
         context.getSharedPreferences("phone-aws-debug", 0).getBoolean("skip_biometric", false)
@@ -228,6 +252,38 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
         }
     }
 
+    fun decide(host: HostGate, req: GateClient.ApprovalRequest, approve: Boolean) {
+        busy = true
+        feedback = null
+        scope.launch {
+            try {
+                if (approve && !devOverride && !debugSkipBiometric) {
+                    val authentication = activity?.let {
+                        requireBiometric(it, "Approve ${req.resource} for ${req.requester}", "Cloud Gate")
+                    }
+                    feedback = when (authentication) {
+                        BiometricResult.Authenticated -> null
+                        BiometricResult.UserCancelled -> "Biometric cancelled"
+                        BiometricResult.NotAvailable -> "No biometric enrolled"
+                        is BiometricResult.Failed -> authentication.reason
+                        null -> "Biometric prompt is unavailable"
+                    }
+                    if (authentication != BiometricResult.Authenticated) return@launch
+                }
+                val res = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    host.aws.decideRequest(req.id, approve = approve)
+                }
+                if (res is GateClient.Result.Error) {
+                    feedback = "${res.type}: ${res.message}"
+                }
+                refresh()
+                now = epochSeconds()
+            } finally {
+                busy = false
+            }
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -241,6 +297,22 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
                 OutlinedButton(onClick = { devOverride = true }) { Text("Use local emulator") }
             }
         } else {
+            val allPending = statuses.values
+                .flatMap { it.pending }
+                .distinctBy { it.id }
+                .filter { it.expiresAt > now }
+            if (allPending.isNotEmpty()) {
+                Text("Pending approval requests", style = MaterialTheme.typography.titleMedium)
+                allPending.forEach { req ->
+                    PendingRequestCard(
+                        req = req,
+                        busy = busy,
+                        onApprove = { decide(selected, req, approve = true) },
+                        onDeny = { decide(selected, req, approve = false) },
+                    )
+                }
+                HorizontalDivider()
+            }
             Text("Access by computer", style = MaterialTheme.typography.titleMedium)
             AccessMatrix(hosts, selected, statuses, now, enabled = !busy) { host ->
                 settings.select(host.id)
@@ -314,6 +386,42 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
                     selectedKey = settings.load()?.rowKey
                 }
             }) { Text("Forget ${selected.name}") }
+        }
+    }
+}
+
+@Composable
+private fun PendingRequestCard(
+    req: GateClient.ApprovalRequest,
+    busy: Boolean,
+    onApprove: () -> Unit,
+    onDeny: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Who asks: ${req.requester}", style = MaterialTheme.typography.titleSmall)
+            Text("Resource: ${req.resource} (${req.scope})", style = MaterialTheme.typography.bodyMedium)
+            Text("Why: ${req.reason}", style = MaterialTheme.typography.bodyMedium)
+            Text("Duration: ${formatDurationLabel(req.ttlSeconds)}", style = MaterialTheme.typography.bodySmall)
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Button(enabled = !busy, onClick = onApprove) {
+                    Text("Approve")
+                }
+                OutlinedButton(enabled = !busy, onClick = onDeny) {
+                    Text("Deny")
+                }
+            }
         }
     }
 }
@@ -450,6 +558,48 @@ private fun UpdateBanner(updateInfo: ReleaseInfo?, onUpdate: (ReleaseInfo) -> Un
 internal fun durationIndexFor(options: List<Int>, savedMinutes: Int): Int {
     val exact = options.indexOf(savedMinutes)
     return if (exact >= 0) exact else options.indexOf(60).takeIf { it >= 0 } ?: 0
+}
+
+internal fun formatDurationLabel(seconds: Long): String = when {
+    seconds % 3600L == 0L -> "${seconds / 3600L}h"
+    seconds % 60L == 0L -> "${seconds / 60L}m"
+    else -> "${seconds}s"
+}
+
+private fun notifyPendingRequest(context: Context, req: GateClient.ApprovalRequest) {
+    runCatching {
+        val mgr = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        val channelId = "phone_gate_approvals"
+        val channel = NotificationChannel(
+            channelId,
+            "Approval Requests",
+            NotificationManager.IMPORTANCE_HIGH,
+        )
+        mgr.createNotificationChannel(channel)
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pi = PendingIntent.getActivity(
+            context,
+            req.id.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notif = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("${req.requester} asks for ${req.resource} (${req.scope})")
+            .setContentText("${req.reason} · ${formatDurationLabel(req.ttlSeconds)}")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "Who: ${req.requester}\nResource: ${req.resource} (${req.scope})\nWhy: ${req.reason}\nDuration: ${formatDurationLabel(req.ttlSeconds)}"
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        mgr.notify(req.id.hashCode(), notif)
+    }
 }
 
 private fun epochSeconds(): Long = System.currentTimeMillis() / 1000
