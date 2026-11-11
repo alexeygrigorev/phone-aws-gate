@@ -106,3 +106,47 @@ def test_500_when_gate_has_bad_mode():
     with patch.object(gate, "read_gate", return_value=bad):
         resp = vendor.handler(_event(), _ctx())
     assert resp["statusCode"] == 500
+
+
+def _requests_event(body: dict, method: str = "POST") -> dict:
+    return {"rawPath": "/requests", "headers": {"authorization": BEARER}, "httpMethod": method, "body": json.dumps(body)}
+
+
+def _create_request_body() -> dict:
+    return {
+        "requester": "orin-vale",
+        "resource": "browser",
+        "scope": "desktop",
+        "reason": "Verify a rendering bug",
+        "ttl_s": 900,
+    }
+
+
+@patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": ""}, clear=False)
+def test_post_requests_without_push_config_returns_201_notified_false():
+    with patch.object(gate, "create_request", return_value={"id": "abc123"}):
+        resp = vendor.handler(_requests_event(_create_request_body()), _ctx())
+    assert resp["statusCode"] == 201
+    body = json.loads(resp["body"])
+    assert body["id"] == "abc123"
+    assert body["notified"] is False
+
+
+def test_post_requests_pushes_and_reports_notified_true():
+    with patch.object(gate, "create_request", return_value={"id": "abc123"}) as create, \
+         patch("phone_aws_auth.handlers.vendor.notify.notify_request_created",
+               return_value={"notified": True, "message_id": 5}) as notify_mock:
+        resp = vendor.handler(_requests_event(_create_request_body()), _ctx())
+    assert resp["statusCode"] == 201
+    assert json.loads(resp["body"])["notified"] is True
+    notify_mock.assert_called_once_with({"id": "abc123"})
+    create.assert_called_once()
+
+
+def test_post_requests_push_failure_still_creates_request():
+    with patch.object(gate, "create_request", return_value={"id": "abc123"}), \
+         patch("phone_aws_auth.handlers.vendor.notify.notify_request_created",
+               return_value={"notified": False, "reason": "URLError"}):
+        resp = vendor.handler(_requests_event(_create_request_body()), _ctx())
+    assert resp["statusCode"] == 201
+    assert json.loads(resp["body"])["notified"] is False

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -158,7 +159,7 @@ private suspend fun setAccess(host: HostGate, accounts: Set<CloudAccount>, durat
     }
 
 @Composable
-fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
+fun MainScreen(onPair: () -> Unit, pairVersion: Int, focusRequestId: String? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settings = remember { PairedSettings(context) }
@@ -307,6 +308,7 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
                     PendingRequestCard(
                         req = req,
                         busy = busy,
+                        focused = focusesRequest(req, focusRequestId),
                         onApprove = { decide(selected, req, approve = true) },
                         onDeny = { decide(selected, req, approve = false) },
                     )
@@ -394,11 +396,18 @@ fun MainScreen(onPair: () -> Unit, pairVersion: Int) {
 private fun PendingRequestCard(
     req: GateClient.ApprovalRequest,
     busy: Boolean,
+    focused: Boolean = false,
     onApprove: () -> Unit,
     onDeny: () -> Unit,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = "Approval request ${req.id}" }
+            .then(
+                if (focused) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, MaterialTheme.shapes.medium)
+                else Modifier
+            ),
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
         shape = MaterialTheme.shapes.medium,
@@ -578,6 +587,8 @@ private fun notifyPendingRequest(context: Context, req: GateClient.ApprovalReque
         mgr.createNotificationChannel(channel)
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            // Deep link: opening this notification lands on this exact request.
+            putExtra(KEY_FOCUS_REQUEST_ID, req.id)
         }
         val pi = PendingIntent.getActivity(
             context,
@@ -588,10 +599,10 @@ private fun notifyPendingRequest(context: Context, req: GateClient.ApprovalReque
         val notif = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("${req.requester} asks for ${req.resource} (${req.scope})")
-            .setContentText("${req.reason} · ${formatDurationLabel(req.ttlSeconds)}")
+            .setContentText("${req.reason} · ${formatExpiresIn(req.expiresAt, epochSeconds())}")
             .setStyle(
                 NotificationCompat.BigTextStyle().bigText(
-                    "Who: ${req.requester}\nResource: ${req.resource} (${req.scope})\nWhy: ${req.reason}\nDuration: ${formatDurationLabel(req.ttlSeconds)}"
+                    "Who: ${req.requester}\nResource: ${req.resource} (${req.scope})\nWhy: ${req.reason}\n${formatExpiresIn(req.expiresAt, epochSeconds())}"
                 )
             )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -600,6 +611,16 @@ private fun notifyPendingRequest(context: Context, req: GateClient.ApprovalReque
             .build()
         mgr.notify(req.id.hashCode(), notif)
     }
+}
+
+internal const val KEY_FOCUS_REQUEST_ID = "approve_request_id"
+
+internal fun focusesRequest(req: GateClient.ApprovalRequest, focusRequestId: String?): Boolean =
+    focusRequestId != null && req.id == focusRequestId
+
+internal fun formatExpiresIn(expiresAt: Long, now: Long): String {
+    val minutes = ((expiresAt - now).coerceAtLeast(0) + 59) / 60
+    return "Expires: in ${minutes}m"
 }
 
 private fun epochSeconds(): Long = System.currentTimeMillis() / 1000

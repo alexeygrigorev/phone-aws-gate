@@ -209,3 +209,99 @@ def test_sandbox_only_refuses_main():
     handler, _, sts = _load_handler(_open_item())
     assert handler(dict(_event(), rawPath="/main"), _ctx())["statusCode"] == 403
     assert sts.assume_role_kwargs is None
+
+
+class DictTable:
+    """Minimal DDB fake covering the POST /requests write path."""
+
+    def __init__(self):
+        self.items: dict = {}
+
+    def get_item(self, *, Key: dict, ConsistentRead: bool = True) -> dict:
+        return {"Item": self.items[Key["token_hash"]]} if Key["token_hash"] in self.items else {}
+
+    def put_item(self, Item: dict) -> None:
+        self.items[Item["token_hash"]] = Item
+
+
+def _requests_event(body: dict) -> dict:
+    return {
+        "rawPath": "/requests",
+        "headers": {"authorization": BEARER},
+        "httpMethod": "POST",
+        "body": json.dumps(body),
+    }
+
+
+def _request_body() -> dict:
+    return {
+        "requester": "orin-vale",
+        "resource": "browser",
+        "scope": "desktop",
+        "reason": "Verify a rendering bug",
+        "ttl_s": 900,
+    }
+
+
+def _load_request_handler(extra_env: dict | None = None):
+    table = DictTable()
+    sts = FakeStsClient()
+    module_globals: dict = {}
+    env = {
+        "SANDBOX_ROLE_ARN": "arn:aws:iam::000000000000:role/phone-aws-sandbox-role",
+        "SESSION_DURATION": "900",
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_CHAT_ID": "",
+    }
+    env.update(extra_env or {})
+    with patch.dict(os.environ, env, clear=False), patch.dict(sys.modules, {"boto3": FakeBoto3(table, sts)}):
+        exec(_inline_lambda_code(), module_globals)
+    return module_globals["handler"], table
+
+
+def test_inline_created_request_without_push_config_reports_notified_false():
+    handler, table = _load_request_handler()
+    resp = handler(_requests_event(_request_body()), _ctx())
+    assert resp["statusCode"] == 201
+    body = json.loads(resp["body"])
+    assert body["state"] == "pending"
+    assert body["notified"] is False
+    assert f"req:{body['id']}" in table.items
+    assert "pending:global" in table.items
+
+
+def test_inline_created_request_pushes_owner_notification_with_deep_link():
+    import urllib.request
+
+    captured: dict = {}
+
+    class FakeTgResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"result": {"message_id": 9}}).encode()
+
+    def fake_urlopen(req, timeout):
+        captured["url"] = req.full_url
+        captured["payload"] = json.loads(req.data.decode())
+        return FakeTgResponse()
+
+    handler, _table = _load_request_handler({
+        "TELEGRAM_BOT_TOKEN": "bot-token",
+        "TELEGRAM_CHAT_ID": "owner-chat",
+        "GATE_APPROVE_BASE_URL": "https://tools.dtcdev.click",
+    })
+    with patch.object(urllib.request, "urlopen", fake_urlopen):
+        resp = handler(_requests_event(_request_body()), _ctx())
+    assert resp["statusCode"] == 201
+    body = json.loads(resp["body"])
+    assert body["notified"] is True
+    assert captured["url"].endswith("/botbot-token/sendMessage")
+    assert captured["payload"]["chat_id"] == "owner-chat"
+    text = captured["payload"]["text"]
+    for needle in ("orin-vale", "browser (desktop)", "Verify a rendering bug", "Expires:", f"/approve?id={body['id']}"):
+        assert needle in text

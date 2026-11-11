@@ -18,6 +18,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.alexeygrigorev.phoneawsauth.settings.PairedSettings
+import com.alexeygrigorev.phoneawsauth.ui.screens.KEY_FOCUS_REQUEST_ID
 import com.alexeygrigorev.phoneawsauth.ui.screens.MainScreen
 import com.alexeygrigorev.phoneawsauth.ui.screens.PairScreen
 import com.alexeygrigorev.phoneawsauth.ui.screens.parse
@@ -66,7 +67,7 @@ class MainActivity : FragmentActivity() {
 }
 
 @Composable
-private fun App() {
+private fun App(focusRequestId: String? = null) {
     val navController = rememberNavController()
     // Bumped after a successful pair so MainScreen re-reads settings.
     var pairVersion by remember { mutableIntStateOf(0) }
@@ -81,6 +82,7 @@ private fun App() {
                 MainScreen(
                     onPair = { navController.navigate(Routes.Pair) },
                     pairVersion = pairVersion,
+                    focusRequestId = focusRequestId,
                 )
             }
             composable(Routes.Pair) {

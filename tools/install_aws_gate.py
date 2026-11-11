@@ -336,8 +336,14 @@ def _format_duration(ttl_s: int) -> str:
     return f"{ttl_s}s"
 
 
-def _notify_phone(req_obj: dict, gate_token: str = "") -> None:
-    """Register request with tools.dtcdev.click/approve and notify Alexey's phone."""
+def _notify_phone(req_obj: dict, gate_token: str = "", pushed_by_vendor: bool = False) -> None:
+    """Register request with tools.dtcdev.click/approve; notify the owner's phone.
+
+    The vendor Lambda pushes the owner notification itself for every created
+    request. The direct Telegram send here is only a fallback for older vendor
+    deployments without push (`notified` missing/false), so the phone never
+    receives the same request twice from two different bots.
+    """
     notify_url = os.environ.get("PHONE_GATE_NOTIFY_URL", "https://tools.dtcdev.click/api/phone-gate/requests")
     auth_token = gate_token or os.environ.get("DTC_TOOLS_SECRET", "")
     if not auth_token:
@@ -363,6 +369,9 @@ def _notify_phone(req_obj: dict, gate_token: str = "") -> None:
                 pass
         except Exception:
             pass
+
+    if pushed_by_vendor:
+        return
 
     # Fallback: direct Telegram notification to Alexey's phone if bot token is configured on host
     # Deduplicate by (requester, resource, scope) within 15 minutes so retries never spam the phone.
@@ -471,7 +480,7 @@ def cmd_request(args: argparse.Namespace) -> int:
     )
     req_obj["approve_url"] = f"https://tools.dtcdev.click/approve?id={urllib.parse.quote(str(req_obj['id']))}"
     if not args.no_notify:
-        _notify_phone(req_obj, token)
+        _notify_phone(req_obj, token, pushed_by_vendor=bool(req_obj.get("notified")))
 
     if not args.wait:
         print(json.dumps(req_obj, indent=2))

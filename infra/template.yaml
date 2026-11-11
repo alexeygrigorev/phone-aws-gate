@@ -18,6 +18,23 @@ Parameters:
     Default: phone-aws-auth
     Description: Used for resource tagging; do not change.
 
+  TelegramBotToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Bot token used to push new approval requests to the owner's phone. Empty disables push.
+
+  TelegramChatId:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Owner chat that receives new approval-request pushes. Empty disables push.
+
+  ApproveBaseUrl:
+    Type: String
+    Default: https://tools.dtcdev.click
+    Description: Base URL used in pushed deep links to the exact approval request.
+
 Resources:
 
   # ---------------------------------------------------------------------------
@@ -134,16 +151,33 @@ Resources:
         Variables:
           SANDBOX_ROLE_ARN: !GetAtt SandboxRole.Arn
           SESSION_DURATION: !Ref SessionDurationSeconds
+          TELEGRAM_BOT_TOKEN: !Ref TelegramBotToken
+          TELEGRAM_CHAT_ID: !Ref TelegramChatId
+          GATE_APPROVE_BASE_URL: !Ref ApproveBaseUrl
       Code:
         # Self-contained vendor handler. Kept <4KB so it inlines cleanly.
         # Mirrors src/phone_aws_auth/handlers/vendor.py.
         ZipFile: |
-          import hashlib,json,logging,os,time,urllib.parse as up,uuid,boto3
+          import hashlib,json,logging,os,time,urllib.parse as up,urllib.request as uq,uuid,boto3
           E=os.environ;R={"sandbox":E["SANDBOX_ROLE_ARN"]};D=int(E.get("SESSION_DURATION","900"))
           M="arn:aws:iam::387546586013:role/aws-gate-main-access"
           RS={"aws-sandbox":"sandbox","aws-main":"main","browser":"desktop","sms":"login"}
           log=logging.getLogger(__name__);log.setLevel(logging.INFO)
           _d=boto3.resource("dynamodb").Table("phone-aws-gate");_s=boto3.client("sts")
+          TB,TC,AB=E.get("TELEGRAM_BOT_TOKEN",""),E.get("TELEGRAM_CHAT_ID",""),E.get("GATE_APPROVE_BASE_URL","https://tools.dtcdev.click")
+          def _tg(rc):
+           if not(TB and TC):return{"notified":False,"reason":"not_configured"}
+           try:
+            for r in(_g("pending:global")or{}).get("requests",[]):
+             if r.get("id")!=rc.get("id")and r.get("state")=="pending"and int(r.get("expires_at",0))>int(time.time())and(r.get("requester"),r.get("resource"),r.get("scope"))==(rc.get("requester"),rc.get("resource"),rc.get("scope"))and int(rc.get("requested_at",0))-int(r.get("requested_at",0))<900:
+              return{"notified":False,"reason":"duplicate_recent"}
+            mn=max(0,(int(rc["expires_at"])-int(time.time())+59)//60)
+            tx=f"Cloud Gate approval request {rc['id']}\nWho asks: {rc['requester']}\nResource: {rc['resource']} ({rc['scope']})\nWhy: {rc['reason']}\nExpires: {time.strftime('%Y-%m-%d %H:%M UTC',time.gmtime(int(rc['expires_at'])))} (in {mn} min)\n\nApprove/Deny in the Cloud Gate phone app, or open this exact request:\n{AB.rstrip('/')}/approve?id={rc['id']}"
+            q=uq.Request(f"https://api.telegram.org/bot{TB}/sendMessage",data=json.dumps({"chat_id":TC,"text":tx}).encode(),method="POST",headers={"Content-Type":"application/json"})
+            rs=json.loads(uq.urlopen(q,timeout=5).read())
+            return{"notified":True,"message_id":rs.get("result",{}).get("message_id","")}
+           except Exception as e:
+            log.warning("push failed request=%s %s",rc.get("id"),type(e).__name__);return{"notified":False,"reason":type(e).__name__}
           def _const_eq(a,b):return len(a)==len(b)and not sum(ord(x)^ord(y)for x,y in zip(a,b))
           def _r(s,b):return{"statusCode":s,"headers":{"Content-Type":"application/json"},"body":b if isinstance(b,str)else json.dumps(b,default=int)}
           def _g(k):return _d.get_item(Key={"token_hash":k},ConsistentRead=True).get("Item")
@@ -167,7 +201,9 @@ Resources:
             rc={"id":id,"host_token_hash":th,"requester":w[:120],"resource":rs,"scope":sc[:80],"reason":y[:300],"ttl_s":tl,"state":"pending","requested_at":n,"expires_at":n+900}
             _p(f"req:{id}",**rc)
             for pk in(f"pending:{th}","pending:global"):_p(pk,requests=([r for r in(_g(pk)or{}).get("requests",[])if r.get("state")=="pending"and int(r.get("expires_at",0))>n]+[rc])[-20:],expires_at=n+86400)
-            return _r(201,rc)
+            ns=_tg(rc)
+            if not ns.get("notified"):log.info("push skipped request=%s reason=%s",id,ns.get("reason"))
+            return _r(201,{**rc,"notified":bool(ns.get("notified"))})
            if p[:10]=="/requests/":
             it=_g("req:"+p[10:])
             if not it:return _r(404,"")

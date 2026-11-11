@@ -16,7 +16,7 @@ import urllib.parse
 
 import boto3
 
-from .. import config, gate
+from .. import config, gate, notify
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
@@ -100,7 +100,10 @@ def handler(event: dict, context) -> dict:
                 reason=str(body.get("reason", "")),
                 ttl_s=int(body.get("ttl_s", 3600)),
             )
-            return _response(201, req)
+            notified = notify.notify_request_created(req)
+            if not notified.get("notified"):
+                log.info("push skipped request=%s reason=%s", req.get("id"), notified.get("reason"))
+            return _response(201, {**req, "notified": bool(notified.get("notified"))})
         except (ValueError, TypeError, json.JSONDecodeError) as e:
             return _response(400, {"error": "bad_request", "message": str(e)})
 
