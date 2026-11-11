@@ -49,4 +49,32 @@ class MainScreenTest {
         assertEquals("30m", formatDurationLabel(1800))
         assertEquals("90s", formatDurationLabel(90))
     }
+
+    private fun request(id: String) = GateClient.ApprovalRequest(
+        id = id,
+        hostTokenHash = "h",
+        requester = "orin-vale",
+        resource = "browser",
+        scope = "desktop",
+        reason = "verify",
+        ttlSeconds = 900,
+        requestedAt = 100,
+        expiresAt = 1000,
+    )
+
+    @Test
+    fun focusMatchesOnlyTheExactRequestFromTheNotification() {
+        val target = request("abcd1234efgh")
+        val other = request("999988887777")
+        assert(focusesRequest(target, "abcd1234efgh"))
+        assert(!focusesRequest(other, "abcd1234efgh"))
+        assert(!focusesRequest(target, null))
+    }
+
+    @Test
+    fun formatExpiresInShowsRoundedMinutes() {
+        assertEquals("Expires: in 15m", formatExpiresIn(expiresAt = 1100, now = 200))
+        assertEquals("Expires: in 1m", formatExpiresIn(expiresAt = 1060, now = 1000))
+        assertEquals("Expires: in 0m", formatExpiresIn(expiresAt = 500, now = 1000))
+    }
 }

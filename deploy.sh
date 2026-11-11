@@ -11,6 +11,16 @@ REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-eu-west-1}}"
 umask 077
 mkdir -p .runtime
 
+# Owner push channel for new approval requests. Values are secrets and live in
+# the gitignored .runtime/notify.env; they are passed as NoEcho parameters and
+# are never printed or committed.
+PARAM_OVERRIDES=()
+if [[ -f .runtime/notify.env ]]; then
+    # shellcheck disable=SC1091
+    . ./.runtime/notify.env
+    [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && PARAM_OVERRIDES+=(--parameter-overrides "TelegramBotToken=${TELEGRAM_BOT_TOKEN}" "TelegramChatId=${TELEGRAM_CHAT_ID:-}" "ApproveBaseUrl=${GATE_APPROVE_BASE_URL:-https://tools.dtcdev.click}")
+fi
+
 echo "Deploying $STACK_NAME to $REGION ..."
 
 echo "Sandbox mode will target the sandbox role created by this stack."
@@ -19,7 +29,8 @@ aws cloudformation deploy \
     --region "$REGION" \
     --stack-name "$STACK_NAME" \
     --template-file infra/template.yaml \
-    --capabilities CAPABILITY_NAMED_IAM
+    --capabilities CAPABILITY_NAMED_IAM \
+    ${PARAM_OVERRIDES+"${PARAM_OVERRIDES[@]}"}
 
 echo
 echo "=== Outputs ==="

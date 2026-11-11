@@ -165,6 +165,30 @@ In the app:
 
 Already-issued STS credentials can remain valid until their 15-minute expiry. New refreshes fail after Stop or after the TTL expires.
 
+## Push Notifications For Approval Requests
+
+Every new pending approval request is pushed to the owner's phone by the vendor
+Lambda itself, so the owner sees it without opening the app. The Telegram push
+shows requester, resource, reason and absolute expiry, and deep-links to that
+exact request (`https://tools.dtcdev.click/approve?id=<request id>`); real
+approve/deny stays a phone/web owner action with no bypass. Configure it once
+by writing the gitignored `.runtime/notify.env` next to `deploy.sh`:
+
+```sh
+TELEGRAM_BOT_TOKEN=<bot token>
+TELEGRAM_CHAT_ID=<owner chat id>
+# optional override: GATE_APPROVE_BASE_URL=https://tools.dtcdev.click
+```
+
+`./deploy.sh` passes them as `NoEcho` CloudFormation parameters; redeploying
+without that file keeps the previously deployed values. If push is not
+configured the vendor reports `notified: false` and the requesting host falls
+back to its local Telegram configuration, so the phone is never notified twice.
+
+The phone app's own notification (posted when the app is open) now carries the
+request id and opens the app directly on that exact request card; the app also
+shows the absolute expiry instead of only the duration.
+
 ## Architecture
 
 ```mermaid
